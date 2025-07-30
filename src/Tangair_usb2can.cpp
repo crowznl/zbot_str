@@ -125,9 +125,9 @@ void Tangair_usb2can::CAN_RX_device_0_thread()
             CAN_DEV0_RX.current_temp = (data_rx[6] << 8) | (data_rx[7]);
 
             // 转换
-            CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (-4.0 * PI), (4.0 * PI), 16);
-            CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (-15.0), (15.0), 16);    // 灵足电机,此处为RS04参数
-            CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (-120.0), (120.0), 16);// 灵足电机,此处为RS04参数
+            CAN_DEV0_RX.current_position_f = uint_to_float(CAN_DEV0_RX.current_position, (P_MIN), (P_MAX), 16);
+            CAN_DEV0_RX.current_speed_f = uint_to_float(CAN_DEV0_RX.current_speed, (V_MIN), (V_MAX), 16);    // 灵足电机,此处为RS04参数
+            CAN_DEV0_RX.current_torque_f = uint_to_float(CAN_DEV0_RX.current_torque, (T_MIN), (T_MAX), 16);// 灵足电机,此处为RS04参数
             CAN_DEV0_RX.current_temp_f = (float)CAN_DEV0_RX.current_temp / 10;                              //温度单位为摄氏度
 
             if (channel == 1) // 模块0，can1
@@ -223,9 +223,9 @@ void Tangair_usb2can::CAN_RX_device_1_thread()
             CAN_DEV1_RX.current_temp = (data_rx[6] << 8) | (data_rx[7]);
 
             // 转换
-            CAN_DEV1_RX.current_position_f = uint_to_float(CAN_DEV1_RX.current_position, (-4.0 * PI), (4.0 * PI), 16);
-            CAN_DEV1_RX.current_speed_f = uint_to_float(CAN_DEV1_RX.current_speed, (-15.0), (15.0), 16);    // 灵足电机,此处为RS04参数
-            CAN_DEV1_RX.current_torque_f = uint_to_float(CAN_DEV1_RX.current_torque, (-120.0), (120.0), 16);// 灵足电机,此处为RS04参数
+            CAN_DEV1_RX.current_position_f = uint_to_float(CAN_DEV1_RX.current_position, (P_MIN), (P_MAX), 16);
+            CAN_DEV1_RX.current_speed_f = uint_to_float(CAN_DEV1_RX.current_speed, (V_MIN), (V_MAX), 16);    // 灵足电机,此处为RS04参数
+            CAN_DEV1_RX.current_torque_f = uint_to_float(CAN_DEV1_RX.current_torque, (T_MIN), (T_MAX), 16);// 灵足电机,此处为RS04参数
             CAN_DEV1_RX.current_temp_f = (float)CAN_DEV1_RX.current_temp / 10;
 
             if (channel == 1)  // 模块1，can1
