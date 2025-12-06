@@ -6,8 +6,10 @@
 #ifdef __cplusplus
 extern "C"{
 #endif
+
 #define STANDARD 0
 #define EXTENDED 1
+
 #pragma pack(1)
 typedef struct FrameInfo {
     uint32_t canID;

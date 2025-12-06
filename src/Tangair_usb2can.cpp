@@ -22,6 +22,7 @@ Tangair_usb2can::Tangair_usb2can()
     running_ = true;
     all_thread_done_ = false;
     motor_zero_set_already = true; // 注意是否进行过零点设置
+    Motor_Ctrl_Mode = PD_MODE; // 选择电机控制模式
 
     USB2CAN0_ = openUSBCAN("/dev/USB2CAN0");
     if (USB2CAN0_ == -1)
@@ -39,23 +40,33 @@ Tangair_usb2can::Tangair_usb2can()
 
     // ********************************************************************** 初 始 化 ********************************************************************** //
     {
-        if (motor_zero_set_already == false) // 电机未进行过零点设置
+        if (motor_zero_set_already == false) // 电机未进行过零点设置 // 若未进行零点设置，切记将TX线程的运动控制代码注释
         {
             Motor_Zero_Set_ALL(Delay_1000us);
             sleep(1);
             ENABLE_ALL_Motor(Delay_1000us);
             sleep(1);
+            Read_Clear(12); // 清理接收缓存
         }
         else if (motor_zero_set_already == true) // 电机进行过零点设置
         {
-            Init_Motor_ALL(10000); // 使能电机并运动到指定角度
-            sleep(3);
+            if (Motor_Ctrl_Mode == PP_MODE)
+            {
+                ALL_Motor_PP_Init(init_angles); // 使能电机，切换到PP模式，运动到指定角度
+                Read_Clear(30); // 清理接收缓存
+            }
+
+            else if (Motor_Ctrl_Mode == PD_MODE)
+            {
+                ALL_Motor_PD_Init(init_angles);
+                Read_Clear(12); // 清理接收缓存
+            }
         }
 
         IMU_Set_ALL_SYNC_Mode(Delay_1000us); // 设置IMU为SYNC模式
-        sleep(1);
+        sleep(0.5);
 
-        for (size_t i = 0; i < 8; i++) // 采集多次初始IMU四元数数据
+        for (size_t i = 0; i < 5; i++) // 采集多次初始IMU四元数数据
         {
             IMU_Send_SYNC(Delay_0us);
             IMU_Get_init_quat();
@@ -156,11 +167,14 @@ void Tangair_usb2can::CAN_RX_device_0_thread()
                 TEMP_ID = ((info_rx.canID) & 0xfff) - 0x480;
                 uint8_t index = TEMP_ID - 0x21;  // 将ID映射到0-2的索引,DEV0_RX包含ID21-ID23的IMU数据
 
-                // 收到的数据低字节在前
-                DEV0_RX.Module_CAN_Recieve[index].quat_w = static_cast<float>(static_cast<int16_t>((data_rx[1] << 8) | data_rx[0])) / 10000.0f;
-                DEV0_RX.Module_CAN_Recieve[index].quat_x = static_cast<float>(static_cast<int16_t>((data_rx[3] << 8) | data_rx[2])) / 10000.0f;
-                DEV0_RX.Module_CAN_Recieve[index].quat_y = static_cast<float>(static_cast<int16_t>((data_rx[5] << 8) | data_rx[4])) / 10000.0f;
-                DEV0_RX.Module_CAN_Recieve[index].quat_z = static_cast<float>(static_cast<int16_t>((data_rx[7] << 8) | data_rx[6])) / 10000.0f;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_DEV0_RX);
+                    // 收到的数据低字节在前
+                    DEV0_RX.Module_CAN_Recieve[index].quat_w = static_cast<float>(static_cast<int16_t>((data_rx[1] << 8) | data_rx[0])) / 10000.0f;
+                    DEV0_RX.Module_CAN_Recieve[index].quat_x = static_cast<float>(static_cast<int16_t>((data_rx[3] << 8) | data_rx[2])) / 10000.0f;
+                    DEV0_RX.Module_CAN_Recieve[index].quat_y = static_cast<float>(static_cast<int16_t>((data_rx[5] << 8) | data_rx[4])) / 10000.0f;
+                    DEV0_RX.Module_CAN_Recieve[index].quat_z = static_cast<float>(static_cast<int16_t>((data_rx[7] << 8) | data_rx[6])) / 10000.0f;
+                }
             }
 
             else if (info_rx.frameType == EXTENDED) // 读取电机数据
@@ -168,53 +182,62 @@ void Tangair_usb2can::CAN_RX_device_0_thread()
                 TEMP_ID = (info_rx.canID >> 8) & 0xff;
                 uint8_t index = TEMP_ID - 0x01;  // 将ID映射到0-2的索引,DEV0_RX包含ID01-ID03的电机数据
 
-                // 解码
-                DEV0_RX.Module_CAN_Recieve[index].master_id = (info_rx.canID) & 0xff;
-                DEV0_RX.Module_CAN_Recieve[index].motor_id = (info_rx.canID >> 8) & 0xff;
-                DEV0_RX.Module_CAN_Recieve[index].fault_message = (info_rx.canID >> 16) & 0x3f;
-                DEV0_RX.Module_CAN_Recieve[index].motor_state = (info_rx.canID >> 22) & 0x03;
-                DEV0_RX.Module_CAN_Recieve[index].mode = (info_rx.canID >> 24) & 0x1f;
-
-                if (DEV0_RX.Module_CAN_Recieve[index].mode == 0x02)
                 {
-                    // 收到的数据高字节在前
-                    DEV0_RX.Module_CAN_Recieve[index].current_position = (data_rx[0] << 8) | (data_rx[1]);
-                    DEV0_RX.Module_CAN_Recieve[index].current_speed = (data_rx[2] << 8) | (data_rx[3]);
-                    DEV0_RX.Module_CAN_Recieve[index].current_torque = (data_rx[4] << 8) | (data_rx[5]);
-                    DEV0_RX.Module_CAN_Recieve[index].current_temp = (data_rx[6] << 8) | (data_rx[7]);
+                    std::lock_guard<std::mutex> lock(mutex_DEV0_RX);
+                    // 解码
+                    DEV0_RX.Module_CAN_Recieve[index].master_id = (info_rx.canID) & 0xff;
+                    DEV0_RX.Module_CAN_Recieve[index].motor_id = (info_rx.canID >> 8) & 0xff;
+                    DEV0_RX.Module_CAN_Recieve[index].fault_message = (info_rx.canID >> 16) & 0x3f;
+                    DEV0_RX.Module_CAN_Recieve[index].motor_state = (info_rx.canID >> 22) & 0x03;
+                    DEV0_RX.Module_CAN_Recieve[index].mode = (info_rx.canID >> 24) & 0x1f;
 
-                    // 转换
-                    DEV0_RX.Module_CAN_Recieve[index].current_position_f = -uint_to_float(DEV0_RX.Module_CAN_Recieve[index].current_position, (P_MIN), (P_MAX), 16); // 电机顺时针为角度增加，所以加负号
-                    DEV0_RX.Module_CAN_Recieve[index].current_speed_f = -uint_to_float(DEV0_RX.Module_CAN_Recieve[index].current_speed, (V_MIN), (V_MAX), 16);    // 灵足电机,此处为RS00参数 // 电机顺时针为角度增加，所以加负号
-                    DEV0_RX.Module_CAN_Recieve[index].current_torque_f = -uint_to_float(DEV0_RX.Module_CAN_Recieve[index].current_torque, (T_MIN), (T_MAX), 16);  // 灵足电机,此处为RS00参数
-                    DEV0_RX.Module_CAN_Recieve[index].current_temp_f = (float)DEV0_RX.Module_CAN_Recieve[index].current_temp / 10;
+                    if (DEV0_RX.Module_CAN_Recieve[index].mode == 0x02)
+                    {
+                        // 收到的数据高字节在前
+                        DEV0_RX.Module_CAN_Recieve[index].current_position = (data_rx[0] << 8) | (data_rx[1]);
+                        DEV0_RX.Module_CAN_Recieve[index].current_speed = (data_rx[2] << 8) | (data_rx[3]);
+                        DEV0_RX.Module_CAN_Recieve[index].current_torque = (data_rx[4] << 8) | (data_rx[5]);
+                        DEV0_RX.Module_CAN_Recieve[index].current_temp = (data_rx[6] << 8) | (data_rx[7]);
+
+                        // 转换
+                        DEV0_RX.Module_CAN_Recieve[index].current_position_f = -uint_to_float(DEV0_RX.Module_CAN_Recieve[index].current_position, (P_MIN), (P_MAX), 16); // 电机顺时针为角度增加，所以加负号
+                        DEV0_RX.Module_CAN_Recieve[index].current_speed_f = -uint_to_float(DEV0_RX.Module_CAN_Recieve[index].current_speed, (V_MIN), (V_MAX), 16); // 电机顺时针为角度增加，所以加负号
+                        DEV0_RX.Module_CAN_Recieve[index].current_torque_f = -uint_to_float(DEV0_RX.Module_CAN_Recieve[index].current_torque, (T_MIN), (T_MAX), 16); // 电机顺时针为角度增加，所以加负号
+                        DEV0_RX.Module_CAN_Recieve[index].current_temp_f = (float)DEV0_RX.Module_CAN_Recieve[index].current_temp / 10;
+                    }
                 }
             }
 
             float logtime_now = getTimestamp();
 
             log_rx_data.timestamp = logtime_now;
-            // log_rx_data.quat_w = DEV0_RX.Module_CAN_Recieve[0].quat_w;
-            // log_rx_data.quat_x = DEV0_RX.Module_CAN_Recieve[0].quat_x;
-            // log_rx_data.quat_y = DEV0_RX.Module_CAN_Recieve[0].quat_y;
-            // log_rx_data.quat_z = DEV0_RX.Module_CAN_Recieve[0].quat_z;
-            log_rx_data.motor_pos[0] = DEV0_RX.Module_CAN_Recieve[0].current_position_f;
-            log_rx_data.motor_pos[1] = DEV0_RX.Module_CAN_Recieve[1].current_position_f;
-            log_rx_data.motor_pos[2] = DEV0_RX.Module_CAN_Recieve[2].current_position_f;
-            log_rx_data.motor_pos[3] = DEV0_RX.Module_CAN_Recieve[3].current_position_f;
-            log_rx_data.motor_pos[4] = DEV0_RX.Module_CAN_Recieve[4].current_position_f;
-            log_rx_data.motor_pos[5] = DEV0_RX.Module_CAN_Recieve[5].current_position_f;
+            {
+                std::lock_guard<std::mutex> lock(mutex_DEV0_RX);
 
-            std::lock_guard<std::mutex> lock(log_rx_mutex);
-            log_rx_queue.push(log_rx_data);
+                log_rx_data.motor_pos[0] = DEV0_RX.Module_CAN_Recieve[0].current_position_f;
+                log_rx_data.motor_pos[1] = DEV0_RX.Module_CAN_Recieve[1].current_position_f;
+                log_rx_data.motor_pos[2] = DEV0_RX.Module_CAN_Recieve[2].current_position_f;
+                log_rx_data.motor_pos[3] = DEV0_RX.Module_CAN_Recieve[3].current_position_f;
+                log_rx_data.motor_pos[4] = DEV0_RX.Module_CAN_Recieve[4].current_position_f;
+                log_rx_data.motor_pos[5] = DEV0_RX.Module_CAN_Recieve[5].current_position_f;
+
+                log_rx_data.motor_vel[0] = DEV0_RX.Module_CAN_Recieve[0].current_speed_f;
+                log_rx_data.motor_vel[1] = DEV0_RX.Module_CAN_Recieve[1].current_speed_f;
+                log_rx_data.motor_vel[2] = DEV0_RX.Module_CAN_Recieve[2].current_speed_f;
+                log_rx_data.motor_vel[3] = DEV0_RX.Module_CAN_Recieve[3].current_speed_f;
+                log_rx_data.motor_vel[4] = DEV0_RX.Module_CAN_Recieve[4].current_speed_f;
+                log_rx_data.motor_vel[5] = DEV0_RX.Module_CAN_Recieve[5].current_speed_f;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(mutex_log_rx_queue);
+                log_rx_queue.push(log_rx_data);
+            }
         }
     }
     std::cout << "CAN_RX_device_0_thread  Exit~~" << std::endl;
 }
 
-/*****************************************************************************************************/
-/*********************************       ***发送相关***      ***********************************************/
-/*****************************************************************************************************/
 // can发送线程函数
 void Tangair_usb2can::CAN_TX_thread()
 {
@@ -231,41 +254,44 @@ void Tangair_usb2can::CAN_TX_thread()
 
         //使用策略线程计算得到的输出
         {
-            std::lock_guard<std::mutex> lock(strategy_mutex); //线程锁
+            std::lock_guard<std::mutex> lock(mutex_position_output); //线程锁
             motor_angles[0] = position_output[0];
             motor_angles[1] = position_output[1];
             motor_angles[2] = position_output[2];
             motor_angles[3] = position_output[3];
             motor_angles[4] = position_output[4];
             motor_angles[5] = position_output[5];
-
-            for (size_t i = 0; i < motor_angles.size(); ++i) {
-                motor_angles[i] = std::clamp(motor_angles[i], lower_limit[i], upper_limit[i]);
-            }
         }
 
-        ALL_Motor_PD_Control(Delay_300us, motor_angles);
-        // ALL_Motor_PD_Control(Delay_300us, init_angles);
+        for (size_t i = 0; i < motor_angles.size(); ++i) {
+            motor_angles[i] = std::clamp(motor_angles[i], lower_limit[i], upper_limit[i]);
+        }
+
+        if (Motor_Ctrl_Mode == PD_MODE)
+        {
+            ALL_Motor_PD_Control(Delay_300us, motor_angles);
+            // ALL_Motor_PD_Control(Delay_300us, init_angles);
+        }
+        else if (Motor_Ctrl_Mode == PP_MODE)
+        {
+            ALL_Motor_PP_Angle_Set(Delay_300us, motor_angles);
+            // ALL_Motor_PP_Angle_Set(Delay_300us, init_angles);
+        }
     
         float time_now = getTimestamp();
-
-        log_tx_data.timestamp = time_now;
-        log_tx_data.motor_pos[0] = motor_angles[0];
-        log_tx_data.motor_pos[1] = motor_angles[1];
-        log_tx_data.motor_pos[2] = motor_angles[2];
-        log_tx_data.motor_pos[3] = motor_angles[3];
-        log_tx_data.motor_pos[4] = motor_angles[4];
-        log_tx_data.motor_pos[5] = motor_angles[5];
-
-        std::lock_guard<std::mutex> lock(log_tx_mutex);
-        log_tx_queue.push(log_tx_data);
 
         // 打印数据
         if (tx_count % 1000 == 0)
         {
-            std::cout << " 键盘输入: " << command_input << std::endl;
-            std::cout << " 网络输出: " << position_output[0] << ", " << position_output[1] << ", " << position_output[2] << ", " 
+            {
+                std::lock_guard<std::mutex> lock(mutex_command_input);
+                std::cout << " 键盘输入: " << command_input << std::endl;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex_position_output);
+                std::cout << " 网络输出: " << position_output[0] << ", " << position_output[1] << ", " << position_output[2] << ", " 
                                       << position_output[3] << ", " << position_output[4] << ", " << position_output[5] << std::endl;
+            }
 
             std::cout << " 输入电机1的角度: " << motor_angles[0] << std::endl;
             std::cout << " 输入电机2的角度: " << motor_angles[1] << std::endl;
@@ -274,16 +300,15 @@ void Tangair_usb2can::CAN_TX_thread()
             std::cout << " 输入电机5的角度: " << motor_angles[4] << std::endl;
             std::cout << " 输入电机6的角度: " << motor_angles[5] << std::endl;
 
-            std::cout << " 电机1当前角度: " << DEV0_RX.Module_CAN_Recieve[0].current_position_f << std::endl;
-            std::cout << " 电机2当前角度: " << DEV0_RX.Module_CAN_Recieve[1].current_position_f << std::endl;
-            std::cout << " 电机3当前角度: " << DEV0_RX.Module_CAN_Recieve[2].current_position_f << std::endl;
-            std::cout << " 电机4当前角度: " << DEV0_RX.Module_CAN_Recieve[3].current_position_f << std::endl;
-            std::cout << " 电机5当前角度: " << DEV0_RX.Module_CAN_Recieve[4].current_position_f << std::endl;
-            std::cout << " 电机6当前角度: " << DEV0_RX.Module_CAN_Recieve[5].current_position_f << std::endl;
-
-            std::cout << " IMU四元数: [" << DEV0_RX.Module_CAN_Recieve[0].quat_w << "," << DEV0_RX.Module_CAN_Recieve[0].quat_x << "," << 
-                                           DEV0_RX.Module_CAN_Recieve[0].quat_y << "," << DEV0_RX.Module_CAN_Recieve[0].quat_z << "]" << std::endl;
-            // 由于IMU的ID为0x21，所以四元数存在EV0_RX.Module_CAN_Recieve[0]内，与电机ID为0x01的电机数据存在同一个结构体内，实际上IMU实际放置位置并不与模块1绑定
+            {
+                std::lock_guard<std::mutex> lock(mutex_DEV0_RX);
+                std::cout << " 电机1当前角度: " << DEV0_RX.Module_CAN_Recieve[0].current_position_f << std::endl;
+                std::cout << " 电机2当前角度: " << DEV0_RX.Module_CAN_Recieve[1].current_position_f << std::endl;
+                std::cout << " 电机3当前角度: " << DEV0_RX.Module_CAN_Recieve[2].current_position_f << std::endl;
+                std::cout << " 电机4当前角度: " << DEV0_RX.Module_CAN_Recieve[3].current_position_f << std::endl;
+                std::cout << " 电机5当前角度: " << DEV0_RX.Module_CAN_Recieve[4].current_position_f << std::endl;
+                std::cout << " 电机6当前角度: " << DEV0_RX.Module_CAN_Recieve[5].current_position_f << std::endl;
+            }
 
             std::cout << " 发送次数:               " << tx_count << std::endl
                       << " CAN转USB设备0 接收次数: " << can_dev0_rx_count << std::endl
@@ -299,13 +324,12 @@ void Tangair_usb2can::CAN_TX_thread()
               << std::endl;
 }
 
-// 键盘输入线程，可以键盘修改电机速度
+// 键盘输入线程
 void Tangair_usb2can::keyborad_input()
 {
-
     while (running_)
     {
-        std::cin >> command_input; // 键盘输入电机速度限制
+        std::cin >> command_input; // 键盘输入电机速度限制 // 此处不加线程锁，没有必要
     }
     std::cout << "keyborad_input_thread  Exit~~" << std::endl;
 }
@@ -315,6 +339,10 @@ void Tangair_usb2can::Strategy_thread()
 {
     const std::chrono::milliseconds period(20); // 50Hz
     LogFrame log_strategy_data;
+
+    csv_data = loadCSV_invec("/home/rain/Zbot/Project/Proj1205_test_libtorch/csv_plot_py/obs_env0.csv");
+    csv_index = 0;
+
     while (running_)
     {
         auto t0 = std::chrono::steady_clock::now();
@@ -329,81 +357,96 @@ void Tangair_usb2can::Strategy_thread()
         float cur_quat_z = Q_desired.z();
 
         {
-            std::lock_guard<std::mutex> lock(strategy_mutex); //线程锁
-            input_copy = command_input;
+            {
+                std::lock_guard<std::mutex> lock(mutex_command_input); 
+                input_copy = command_input;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex_DEV0_RX);
+                IMU_quat_correct();
 
-            IMU_quat_correct();
+                cur_quat_w = DEV0_RX.Module_CAN_Recieve[0].quat_w;
+                cur_quat_x = DEV0_RX.Module_CAN_Recieve[0].quat_x;
+                cur_quat_y = DEV0_RX.Module_CAN_Recieve[0].quat_y;
+                cur_quat_z = DEV0_RX.Module_CAN_Recieve[0].quat_z;
 
-            cur_quat_w = DEV0_RX.Module_CAN_Recieve[0].quat_w;
-            cur_quat_x = DEV0_RX.Module_CAN_Recieve[0].quat_x;
-            cur_quat_y = DEV0_RX.Module_CAN_Recieve[0].quat_y;
-            cur_quat_z = DEV0_RX.Module_CAN_Recieve[0].quat_z;
+                std::cout << " IMU四元数: [" << DEV0_RX.Module_CAN_Recieve[0].quat_w << "," << DEV0_RX.Module_CAN_Recieve[0].quat_x << "," << 
+                                               DEV0_RX.Module_CAN_Recieve[0].quat_y << "," << DEV0_RX.Module_CAN_Recieve[0].quat_z << "]" << std::endl;
 
-            std::cout << " IMU四元数: [" << DEV0_RX.Module_CAN_Recieve[0].quat_w << "," << DEV0_RX.Module_CAN_Recieve[0].quat_x << "," << 
-                                           DEV0_RX.Module_CAN_Recieve[0].quat_y << "," << DEV0_RX.Module_CAN_Recieve[0].quat_z << "]" << std::endl;
+                cur_pos[0] = DEV0_RX.Module_CAN_Recieve[0].current_position_f;
+                cur_pos[1] = DEV0_RX.Module_CAN_Recieve[1].current_position_f;
+                cur_pos[2] = DEV0_RX.Module_CAN_Recieve[2].current_position_f;
+                cur_pos[3] = DEV0_RX.Module_CAN_Recieve[3].current_position_f;
+                cur_pos[4] = DEV0_RX.Module_CAN_Recieve[4].current_position_f;
+                cur_pos[5] = DEV0_RX.Module_CAN_Recieve[5].current_position_f;
 
-            cur_pos[0] = DEV0_RX.Module_CAN_Recieve[0].current_position_f;
-            cur_pos[1] = DEV0_RX.Module_CAN_Recieve[1].current_position_f;
-            cur_pos[2] = DEV0_RX.Module_CAN_Recieve[2].current_position_f;
-            cur_pos[3] = DEV0_RX.Module_CAN_Recieve[3].current_position_f;
-            cur_pos[4] = DEV0_RX.Module_CAN_Recieve[4].current_position_f;
-            cur_pos[5] = DEV0_RX.Module_CAN_Recieve[5].current_position_f;
-
-            cur_vel[0] = DEV0_RX.Module_CAN_Recieve[0].current_speed_f;
-            cur_vel[1] = DEV0_RX.Module_CAN_Recieve[1].current_speed_f;
-            cur_vel[2] = DEV0_RX.Module_CAN_Recieve[2].current_speed_f;
-            cur_vel[3] = DEV0_RX.Module_CAN_Recieve[3].current_speed_f;
-            cur_vel[4] = DEV0_RX.Module_CAN_Recieve[4].current_speed_f;
-            cur_vel[5] = DEV0_RX.Module_CAN_Recieve[5].current_speed_f;
-
+                cur_vel[0] = DEV0_RX.Module_CAN_Recieve[0].current_speed_f;
+                cur_vel[1] = DEV0_RX.Module_CAN_Recieve[1].current_speed_f;
+                cur_vel[2] = DEV0_RX.Module_CAN_Recieve[2].current_speed_f;
+                cur_vel[3] = DEV0_RX.Module_CAN_Recieve[3].current_speed_f;
+                cur_vel[4] = DEV0_RX.Module_CAN_Recieve[4].current_speed_f;
+                cur_vel[5] = DEV0_RX.Module_CAN_Recieve[5].current_speed_f;
+            }
         }
 
 #ifdef USE_LIBTORCH
         if (model_loaded && policy_model)
         {
             try {
-                // 构造输入tensor：模型接受输入
-                std::vector<float> invec = {cur_quat_w, cur_quat_x, cur_quat_y, cur_quat_z, 
-                                            cur_pos[0] - init_angles[0], cur_pos[1] - init_angles[1], cur_pos[2] - init_angles[2], cur_pos[3] - init_angles[3], cur_pos[4] - init_angles[4], cur_pos[5] - init_angles[5],
-                                            cur_vel[0], cur_vel[1], cur_vel[2], cur_vel[3], cur_vel[4], cur_vel[5],
-                                            out_last[0], out_last[1], out_last[2], out_last[3], out_last[4], out_last[5],
-                                            input_copy
-                                           };
+                // // 构造输入tensor：模型接受输入
+                // std::vector<float> invec = {cur_quat_w, cur_quat_x, cur_quat_y, cur_quat_z, 
+                //                             cur_pos[0] - init_angles[0], cur_pos[1] - init_angles[1], cur_pos[2] - init_angles[2], cur_pos[3] - init_angles[3], cur_pos[4] - init_angles[4], cur_pos[5] - init_angles[5],
+                //                             cur_vel[0], cur_vel[1], cur_vel[2], cur_vel[3], cur_vel[4], cur_vel[5],
+                //                             out_last[0], out_last[1], out_last[2], out_last[3], out_last[4], out_last[5],
+                //                             input_copy
+                //                            };
+                // ---- 读取CSV作为策略输入 ----
+                std::vector<float> invec;
+                if (csv_index < csv_data.size()) {
+                    invec = csv_data[csv_index++];
+                } else {
+                    // 播放完就停在最后一行
+                    invec = csv_data.back();
+                }
 
                 at::Tensor input_tensor = torch::from_blob(invec.data(), {1, (long)invec.size()}).clone();
                 // 前向推理
                 std::vector<torch::jit::IValue> inputs;
                 inputs.push_back(input_tensor);
                 at::Tensor out = policy_model->forward(inputs).toTensor().squeeze().tanh();
+
                 out_last.assign(out.data_ptr<float>(), 
                                 out.data_ptr<float>() + out.numel());
-                // std::cout << "out shape: " << out.sizes() << std::endl;
-                relative_tensor += out * input_copy * 0.02f;
+                relative_tensor += out * input_copy * 0.02f * PI;
                 relative_tensor = relative_tensor.clip(-1.0f * PI, 1.0f * PI);
-                
-                {
-                    float* temp = relative_tensor.data_ptr<float>();
-                    std::lock_guard<std::mutex> lock(log_strategy_mutex);
-                    float time_now = getTimestamp();
-                    log_strategy_data.timestamp = time_now;
-                    for(int i=0; i<6; ++i) 
-                    {
-                        log_strategy_data.motor_pos[i] = temp[i];
-                    }
-                    log_strategy_queue.push(log_strategy_data);
-                }
                 // at::Tensor类型没有toVector
                 std::vector<float> relative_vec(relative_tensor.data_ptr<float>(), 
                                               relative_tensor.data_ptr<float>() + relative_tensor.numel());
-                
-                std::lock_guard<std::mutex> lock(strategy_mutex);
-                for (size_t i = 0; i < relative_vec.size(); ++i) {
-                    position_output[i] = relative_vec[i] + init_angles[i];
+                {
+                    std::lock_guard<std::mutex> lock(mutex_position_output);
+                    for (size_t i = 0; i < relative_vec.size(); ++i) {
+                        position_output[i] = relative_vec[i] + init_angles[i];
+                    }
+
+                    float time_now = getTimestamp();
+                    log_strategy_data.timestamp = time_now;
+                    for (size_t i = 0; i < 6; ++i) {
+                        log_strategy_data.motor_pos[i] = cur_pos[i] - init_angles[i];
+                        log_strategy_data.motor_vel[i] = cur_vel[i];
+                    }
+                    log_strategy_data.imu_quat[0] = cur_quat_w;
+                    log_strategy_data.imu_quat[1] = cur_quat_x;
+                    log_strategy_data.imu_quat[2] = cur_quat_y;
+                    log_strategy_data.imu_quat[3] = cur_quat_z;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_log_strategy_queue);
+                        log_strategy_queue.push(log_strategy_data);
+                    }
                 }
                 
             } catch (const std::exception &e) {
                 // 推理失败则回退到简单策略
-                std::lock_guard<std::mutex> lock(strategy_mutex);
+                std::lock_guard<std::mutex> lock(mutex_position_output);
                 position_output = init_angles;
                 std::cout << "Policy inference failed: " << e.what() << std::endl;
             }
@@ -412,7 +455,7 @@ void Tangair_usb2can::Strategy_thread()
 #endif
         {
             // 简单回退策略
-            std::lock_guard<std::mutex> lock(strategy_mutex);
+            std::lock_guard<std::mutex> lock(mutex_position_output);
             position_output = init_angles;
         }
 
@@ -424,36 +467,50 @@ void Tangair_usb2can::Strategy_thread()
     std::cout << "Strategy_thread Exit~~" << std::endl;
 }
 
-// 记录线程
+// 日志线程
 void Tangair_usb2can::Log_thread() {
+    // ================== 在这里修改存储路径 ==================
+    std::string log_path = "/home/rain/Zbot/Project/Proj1205_test_libtorch/csv_plot_py/";
+    
+    // 确保路径以斜杠结尾
+    if (!log_path.empty() && log_path.back() != '/') {
+        log_path += '/';
+    }
+    
     using namespace std::chrono;
     auto start_time = steady_clock::now();
     int file_index = 0;
-    std::ofstream tx_file, strategy_file;
+    std::ofstream rx_file, strategy_file;
 
-    // 打开新日志文件的Lambda
     auto openNewFiles = [&](int index) {
-        // 关闭旧文件
-        if (tx_file.is_open()) tx_file.close();
+        if (rx_file.is_open()) rx_file.close();
         if (strategy_file.is_open()) strategy_file.close();
-        
-        // 打开发送数据文件
-        std::string tx_filename = "log_tx_" + std::to_string(index) + ".csv";
-        tx_file.open(tx_filename, std::ios::out);
-        tx_file << "timestamp,motor1,motor2,motor3,motor4,motor5,motor6,qw,qx,qy,qz\n";
-        std::cout << "[Logger] New TX file: " << tx_filename << std::endl;
-        
-        // 打开策略数据文件
-        std::string strategy_filename = "log_strategy_" + std::to_string(index) + ".csv";
+
+        // 使用 log_path 变量
+        std::string rx_filename = log_path + "log_rx_" + std::to_string(index) + ".csv";
+        rx_file.open(rx_filename, std::ios::out);
+        if (!rx_file.is_open()) {
+            std::cerr << "无法打开文件: " << rx_filename << std::endl;
+            return;
+        }
+        // 修改表头：四元数在前
+        rx_file << "timestamp,imu_w,imu_x,imu_y,imu_z,pos1,pos2,pos3,pos4,pos5,pos6,vel1,vel2,vel3,vel4,vel5,vel6\n";
+
+        std::string strategy_filename = log_path + "log_strategy_" + std::to_string(index) + ".csv";
         strategy_file.open(strategy_filename, std::ios::out);
-        strategy_file << "timestamp,motor1,motor2,motor3,motor4,motor5,motor6,qw,qx,qy,qz\n";
-        std::cout << "[Logger] New Strategy file: " << strategy_filename << std::endl;
+        if (!strategy_file.is_open()) {
+            std::cerr << "无法打开文件: " << strategy_filename << std::endl;
+            return;
+        }
+        // 修改表头：四元数在前
+        strategy_file << "timestamp,imu_w,imu_x,imu_y,imu_z,pos1,pos2,pos3,pos4,pos5,pos6,vel1,vel2,vel3,vel4,vel5,vel6\n";
+        
+        std::cout << "创建日志文件: " << rx_filename << " 和 " << strategy_filename << std::endl;
     };
 
     openNewFiles(file_index);
 
     while (running_) {
-        // 每100秒轮换日志文件
         auto now = steady_clock::now();
         if (duration_cast<seconds>(now - start_time).count() >= 100) {
             file_index++;
@@ -461,58 +518,93 @@ void Tangair_usb2can::Log_thread() {
             start_time = now;
         }
 
-        bool hasTxData = false;
-        bool hasStrategyData = false;
-        LogFrame log_tx_data;
-        LogFrame log_strategy_data;
-
-        {   // 处理发送数据队列
-            std::lock_guard<std::mutex> lock(log_tx_mutex);
-            if (!log_tx_queue.empty()) {
-                log_tx_data = log_tx_queue.front();
-                log_tx_queue.pop();
-                hasTxData = true;
+        // 批量收集 RX 队列数据
+        std::vector<LogFrame> rx_batch;
+        {
+            std::lock_guard<std::mutex> lock(mutex_log_rx_queue);
+            while (!log_rx_queue.empty()) {
+                rx_batch.push_back(log_rx_queue.front());
+                log_rx_queue.pop();
             }
         }
 
-        {   // 处理策略数据队列
-            std::lock_guard<std::mutex> lock(log_strategy_mutex);
-            if (!log_strategy_queue.empty()) {
-                log_strategy_data = log_strategy_queue.front();
+        // 批量收集策略队列数据
+        std::vector<LogFrame> strategy_batch;
+        {
+            std::lock_guard<std::mutex> lock(mutex_log_strategy_queue);
+            while (!log_strategy_queue.empty()) {
+                strategy_batch.push_back(log_strategy_queue.front());
                 log_strategy_queue.pop();
-                hasStrategyData = true;
             }
         }
 
-        // 写入发送数据到文件
-        if (hasTxData && tx_file.is_open()) {
-            tx_file << std::fixed << std::setprecision(6)
-                    << log_tx_data.timestamp << ",";
-            for (int i = 0; i < 6; ++i) tx_file << log_tx_data.motor_pos[i] << ",";
-            tx_file << log_tx_data.quat_w << "," << log_tx_data.quat_x << ","
-                    << log_tx_data.quat_y << "," << log_tx_data.quat_z << "\n";
+        // 批量写入 RX 日志
+        if (!rx_batch.empty() && rx_file.is_open()) {
+            for (auto &entry : rx_batch) {
+                rx_file << std::fixed << std::setprecision(6) << entry.timestamp << ",";
+                
+                // 先写入 IMU 四元数 (w,x,y,z)
+                for (int i = 0; i < 4; ++i) {
+                    rx_file << entry.imu_quat[i] << ",";
+                }
+                
+                // 再写入电机位置
+                for (int i = 0; i < 6; ++i) {
+                    rx_file << entry.motor_pos[i] << ",";
+                }
+                
+                // 最后写入电机速度（最后一个不加逗号）
+                for (int i = 0; i < 6; ++i) {
+                    rx_file << entry.motor_vel[i];
+                    if (i < 5) {
+                        rx_file << ",";
+                    } else {
+                        rx_file << "\n";
+                    }
+                }
+            }
+            rx_file.flush();  // 确保数据写入磁盘
         }
 
-        // 写入策略数据到文件
-        if (hasStrategyData && strategy_file.is_open()) {
-            strategy_file << std::fixed << std::setprecision(6)
-                         << log_strategy_data.timestamp << ",";
-            for (int i = 0; i < 6; ++i) strategy_file << log_strategy_data.motor_pos[i] << ",";
-            strategy_file << log_strategy_data.quat_w << "," << log_strategy_data.quat_x << ","
-                         << log_strategy_data.quat_y << "," << log_strategy_data.quat_z << "\n";
+        // 批量写入策略日志
+        if (!strategy_batch.empty() && strategy_file.is_open()) {
+            for (auto &entry : strategy_batch) {
+                strategy_file << std::fixed << std::setprecision(6) << entry.timestamp << ",";
+                
+                // 先写入 IMU 四元数 (w,x,y,z)
+                for (int i = 0; i < 4; ++i) {
+                    strategy_file << entry.imu_quat[i] << ",";
+                }
+                
+                // 再写入电机位置
+                for (int i = 0; i < 6; ++i) {
+                    strategy_file << entry.motor_pos[i] << ",";
+                }
+                
+                // 最后写入电机速度（最后一个不加逗号）
+                for (int i = 0; i < 6; ++i) {
+                    strategy_file << entry.motor_vel[i];
+                    if (i < 5) {
+                        strategy_file << ",";
+                    } else {
+                        strategy_file << "\n";
+                    }
+                }
+            }
+            strategy_file.flush();  // 确保数据写入磁盘
         }
 
-        // 如果两个队列都为空，则短暂休眠
-        if (!hasTxData && !hasStrategyData) {
+        // 队列为空则短暂休眠
+        if (rx_batch.empty() && strategy_batch.empty()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
     }
 
-    // 关闭文件
-    if (tx_file.is_open()) tx_file.close();
+    if (rx_file.is_open()) rx_file.close();
     if (strategy_file.is_open()) strategy_file.close();
+    
+    std::cout << "日志线程结束，文件保存路径: " << log_path << std::endl;
 }
-
 
 /*****************************************************************************************************/
 /*********************************       ***电机相关***      ***********************************************/
@@ -557,42 +649,46 @@ void Tangair_usb2can::Motor_Disable(int32_t dev, uint8_t channel, uint32_t motor
     sendUSBCAN(dev, channel, &txMsg_CAN_Motor, Data_CAN);
 }
 
-void Tangair_usb2can::Motor_Initpos_Get(int32_t dev, uint8_t channel, uint32_t motor_id)
+void Tangair_usb2can::ENABLE_ALL_Motor(int delay_us)
 {
-    ID_CAN.id = motor_id;
-    ID_CAN.exdata = 0xfd; // 主机ID
-    ID_CAN.mode = 0x11;
+    Motor_Enable(USB2CAN0_, 2, 0x01);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
-    FrameInfo info_rx;
-    uint8_t data_rx[8] = {0};
+    Motor_Enable(USB2CAN0_, 1, 0x04);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
-    txMsg_CAN_Motor.canID = ((ID_CAN.id & 0xff) | ((ID_CAN.exdata & 0xffff) << 8) | ((ID_CAN.mode & 0x1f) << 24));
-    for (int i = 0; i < 8; i++)
-    {
-        Data_CAN[i] = 0;
-    }
+    Motor_Enable(USB2CAN0_, 2, 0x02);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
-    Data_CAN[0] = 0x16;
-    Data_CAN[1] = 0x70; 
-    sendUSBCAN(dev, channel, &txMsg_CAN_Motor, Data_CAN);
-    sleep(0.1);
+    Motor_Enable(USB2CAN0_, 1, 0x05);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
-    // 有数据不会阻塞，若无数据则等待1s
-    int recieve_re = readUSBCAN(dev, &channel, &info_rx, data_rx, 1e6);
-    if (recieve_re != -1)
-    {
-        TEMP_ID = (info_rx.canID >> 8) & 0xff;
-        uint8_t index = TEMP_ID - 0x01;  // 将ID映射到0-2的索引,DEV0_RX包含ID01-ID03的电机数据
+    Motor_Enable(USB2CAN0_, 2, 0x03);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
-        int32_t temp_pos = (data_rx[7] << 24) | (data_rx[6] << 16) | (data_rx[5] << 8) | (data_rx[4]);
-        std::memcpy(&DEV0_RX.Module_CAN_Recieve[index].motor_init_position, &temp_pos, sizeof(float));
-        std::cout << "Get InitPos Successful :" << DEV0_RX.Module_CAN_Recieve[index].motor_init_position << std::endl;
-        printf("data:");
-        for (int i = 0; i < 8; i++) {
-            printf("%02x ", data_rx[i]);
-        }
-        printf("\n");
-    }
+    Motor_Enable(USB2CAN0_, 1, 0x06);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+}
+
+void Tangair_usb2can::DISABLE_ALL_Motor(int delay_us)
+{   
+    Motor_Disable(USB2CAN0_, 2, 0x01);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor_Disable(USB2CAN0_, 1, 0x04);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor_Disable(USB2CAN0_, 2, 0x02);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor_Disable(USB2CAN0_, 1, 0x05);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor_Disable(USB2CAN0_, 2, 0x03);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor_Disable(USB2CAN0_, 1, 0x06);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 }
 
 void Tangair_usb2can::Motor_Mode_Change(int32_t dev, uint8_t channel, uint32_t motor_id , uint8_t mode)
@@ -613,6 +709,147 @@ void Tangair_usb2can::Motor_Mode_Change(int32_t dev, uint8_t channel, uint32_t m
     sendUSBCAN(dev, channel, &txMsg_CAN_Motor, Data_CAN);
 }
 
+void Tangair_usb2can::PP_Vel_Max_Set(int32_t dev, uint8_t channel, uint32_t motor_id , float velmax)
+{
+    ID_CAN.id = motor_id;
+    ID_CAN.exdata = 0xfd; // 主机ID
+    ID_CAN.mode = 0x12;
+
+    txMsg_CAN_Motor.canID = ((ID_CAN.id & 0xff) | ((ID_CAN.exdata & 0xffff) << 8) | ((ID_CAN.mode & 0x1f) << 24));
+    for (int i = 0; i < 8; i++)
+    {
+        Data_CAN[i] = 0;
+    }
+    
+    Data_CAN[0] = 0x24;
+    Data_CAN[1] = 0x70;
+    std::memcpy(&Data_CAN[4], &velmax, sizeof(velmax));
+    sendUSBCAN(dev, channel, &txMsg_CAN_Motor, Data_CAN);
+}
+
+void Tangair_usb2can::PP_Acc_Set(int32_t dev, uint8_t channel, uint32_t motor_id , float acc)
+{
+    ID_CAN.id = motor_id;
+    ID_CAN.exdata = 0xfd; // 主机ID
+    ID_CAN.mode = 0x12;
+
+    txMsg_CAN_Motor.canID = ((ID_CAN.id & 0xff) | ((ID_CAN.exdata & 0xffff) << 8) | ((ID_CAN.mode & 0x1f) << 24));
+    for (int i = 0; i < 8; i++)
+    {
+        Data_CAN[i] = 0;
+    }
+    
+    Data_CAN[0] = 0x25;
+    Data_CAN[1] = 0x70;
+    std::memcpy(&Data_CAN[4], &acc, sizeof(acc));
+    sendUSBCAN(dev, channel, &txMsg_CAN_Motor, Data_CAN);
+}
+
+void Tangair_usb2can::PP_Mode_Set(int32_t dev, uint8_t channel, uint32_t motor_id, float velmax, float acc, int delay_us)
+{
+    Motor_Mode_Change(dev, channel, motor_id, 1);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor_Enable(dev, channel, motor_id);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    PP_Vel_Max_Set(dev, channel, motor_id, velmax);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    PP_Acc_Set(dev, channel, motor_id, acc);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+}
+
+void Tangair_usb2can::ALL_Motor_PP_Mode_Set(int delay_us)
+{
+    PP_Mode_Set(USB2CAN0_, 2, 0x01, 20.0f, 30.0f, delay_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    PP_Mode_Set(USB2CAN0_, 1, 0x04, 20.0f, 30.0f, delay_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    PP_Mode_Set(USB2CAN0_, 2, 0x02, 20.0f, 30.0f, delay_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    PP_Mode_Set(USB2CAN0_, 1, 0x05, 20.0f, 30.0f, delay_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    PP_Mode_Set(USB2CAN0_, 2, 0x03, 20.0f, 30.0f, delay_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    PP_Mode_Set(USB2CAN0_, 1, 0x06, 20.0f, 30.0f, delay_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+}
+
+void Tangair_usb2can::PP_Angle_Set(int32_t dev, uint8_t channel, uint32_t motor_id , float angle)
+{
+    ID_CAN.id = motor_id;
+    ID_CAN.exdata = 0xfd; // 主机ID
+    ID_CAN.mode = 0x12;
+
+    txMsg_CAN_Motor.canID = ((ID_CAN.id & 0xff) | ((ID_CAN.exdata & 0xffff) << 8) | ((ID_CAN.mode & 0x1f) << 24));
+    for (int i = 0; i < 8; i++)
+    {
+        Data_CAN[i] = 0;
+    }
+    Data_CAN[0] = 0x16;
+    Data_CAN[1] = 0x70;
+    std::memcpy(&Data_CAN[4], &angle, sizeof(angle));
+    sendUSBCAN(dev, channel, &txMsg_CAN_Motor, Data_CAN);
+}
+
+void Tangair_usb2can::ALL_Motor_PP_Angle_Set(int delay_us, std::vector<float> motor_angles)
+{
+    PP_Angle_Set(USB2CAN0_, 2, 0x01, -motor_angles[0]); // 电机顺时针为角度增加，所以加负号
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    PP_Angle_Set(USB2CAN0_, 1, 0x04, -motor_angles[3]); // 电机顺时针为角度增加，所以加负号
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    PP_Angle_Set(USB2CAN0_, 2, 0x02, -motor_angles[1]); // 电机顺时针为角度增加，所以加负号
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    PP_Angle_Set(USB2CAN0_, 1, 0x05, -motor_angles[4]); // 电机顺时针为角度增加，所以加负号
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    PP_Angle_Set(USB2CAN0_, 2, 0x03, -motor_angles[2]); // 电机顺时针为角度增加，所以加负号
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    PP_Angle_Set(USB2CAN0_, 1, 0x06, -motor_angles[5]); // 电机顺时针为角度增加，所以加负号
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+}
+
+void Tangair_usb2can::ALL_Motor_Mode_PP2PD(int delay_us)
+{
+    Motor_Mode_Change(USB2CAN0_, 2, 0x01, 0);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    Motor_Mode_Change(USB2CAN0_, 1, 0x04, 0);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    Motor_Mode_Change(USB2CAN0_, 2, 0x02, 0);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    Motor_Mode_Change(USB2CAN0_, 1, 0x05, 0);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    Motor_Mode_Change(USB2CAN0_, 2, 0x03, 0);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    Motor_Mode_Change(USB2CAN0_, 1, 0x06, 0);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+}
+
+void Tangair_usb2can::ALL_Motor_PP_Init(std::vector<float> motor_angles)
+{
+    // 所有电机设置为PP模式
+    ALL_Motor_PP_Mode_Set(Delay_10000us);
+    sleep(0.1);
+
+    // 以PP模式运动到初始位置
+    ALL_Motor_PP_Angle_Set(Delay_10000us, motor_angles);
+    sleep(3);
+}
 void Tangair_usb2can::Motor_Zero_Set(int32_t dev, uint8_t channel, uint32_t motor_id)
 {
     ID_CAN.id = motor_id;
@@ -658,69 +895,12 @@ void Tangair_usb2can::Motor_Zero_Set_ALL(int delay_us)
     std::this_thread::sleep_until(t);
 }
 
-// 暂时不用
-void Tangair_usb2can::Init_Motor(int32_t dev, uint8_t channel, uint32_t motor_id)
+void Tangair_usb2can::ALL_Motor_PD_Init(std::vector<float> motor_angles)
 {
-    Motor_Enable(dev, channel, motor_id);
-}
-
-void Tangair_usb2can::Init_Motor_ALL(int delay_us)
-{
-    ENABLE_ALL_Motor(delay_us);
-
-    ALL_Motor_PD_Control(delay_us, init_angles);
-
-    uint8_t channel;
-    FrameInfo info_rx;
-    uint8_t data_rx[8] = {0};
-
-    for (size_t i = 0; i < 12; i++)
-    {
-    // 有数据不会阻塞，若无数据则等待1s
-        int recieve_re = readUSBCAN(USB2CAN0_, &channel, &info_rx, data_rx, 1e5);
-    }
-}
-
-void Tangair_usb2can::ENABLE_ALL_Motor(int delay_us)
-{
-    Motor_Enable(USB2CAN0_, 2, 0x01);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-
-    Motor_Enable(USB2CAN0_, 1, 0x04);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-
-    Motor_Enable(USB2CAN0_, 2, 0x02);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-
-    Motor_Enable(USB2CAN0_, 1, 0x05);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-
-    Motor_Enable(USB2CAN0_, 2, 0x03);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-
-    Motor_Enable(USB2CAN0_, 1, 0x06);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-}
-
-void Tangair_usb2can::DISABLE_ALL_Motor(int delay_us)
-{   
-    Motor_Disable(USB2CAN0_, 2, 0x01);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-
-    Motor_Disable(USB2CAN0_, 1, 0x04);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-
-    Motor_Disable(USB2CAN0_, 2, 0x02);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-
-    Motor_Disable(USB2CAN0_, 1, 0x05);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-
-    Motor_Disable(USB2CAN0_, 2, 0x03);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
-
-    Motor_Disable(USB2CAN0_, 1, 0x06);
-    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+    ENABLE_ALL_Motor(Delay_1000us); // 使能电机
+    sleep(1);
+    ALL_Motor_PD_Control(Delay_1000us, motor_angles); // PD模式运动到指定角度
+    sleep(3);
 }
 
 void Tangair_usb2can::Motor_PD_Control(int32_t dev, uint8_t channel, uint32_t motor_id, Motor_PDControl_Struct *Motor_PDControl, float position)
@@ -749,27 +929,27 @@ void Tangair_usb2can::ALL_Motor_PD_Control(int delay_us, std::vector<float> moto
 {
     auto t = std::chrono::high_resolution_clock::now();//这一句耗时50us
 
-    Motor_PD_Control(USB2CAN0_, 2, 0x01, &Motor1_PDControl, -motor_angles[0]); // 电机顺时针为角度增加，所以加负号
+    Motor_PD_Control(USB2CAN0_, 2, 0x01, &Motor_PDControl, -motor_angles[0]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor_PD_Control(USB2CAN0_, 1, 0x04, &Motor2_PDControl, -motor_angles[3]); // 电机顺时针为角度增加，所以加负号
+    Motor_PD_Control(USB2CAN0_, 1, 0x04, &Motor_PDControl, -motor_angles[3]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor_PD_Control(USB2CAN0_, 2, 0x02, &Motor3_PDControl, -motor_angles[1]); // 电机顺时针为角度增加，所以加负号
+    Motor_PD_Control(USB2CAN0_, 2, 0x02, &Motor_PDControl, -motor_angles[1]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor_PD_Control(USB2CAN0_, 1, 0x05, &Motor4_PDControl, -motor_angles[4]); // 电机顺时针为角度增加，所以加负号
+    Motor_PD_Control(USB2CAN0_, 1, 0x05, &Motor_PDControl, -motor_angles[4]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor_PD_Control(USB2CAN0_, 2, 0x03, &Motor5_PDControl, -motor_angles[2]); // 电机顺时针为角度增加，所以加负号
+    Motor_PD_Control(USB2CAN0_, 2, 0x03, &Motor_PDControl, -motor_angles[2]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor_PD_Control(USB2CAN0_, 1, 0x06, &Motor6_PDControl, -motor_angles[5]); // 电机顺时针为角度增加，所以加负号
+    Motor_PD_Control(USB2CAN0_, 1, 0x06, &Motor_PDControl, -motor_angles[5]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 }
@@ -870,7 +1050,6 @@ void Tangair_usb2can::IMU_quat_correct()
     
     q_current.normalize();
     Eigen::Quaternionf q_corrected = Q_offset * q_current;
-    // Eigen::Quaternionf q_corrected = q_current * Q_offset;
     q_corrected.normalize();
     
     // 存回数据
@@ -878,6 +1057,82 @@ void Tangair_usb2can::IMU_quat_correct()
     DEV0_RX.Module_CAN_Recieve[0].quat_x = q_corrected.x();
     DEV0_RX.Module_CAN_Recieve[0].quat_y = q_corrected.y();
     DEV0_RX.Module_CAN_Recieve[0].quat_z = q_corrected.z();
+}
+
+std::vector<std::vector<float>> Tangair_usb2can::loadCSV_invec(const std::string& path) {
+    std::vector<std::vector<float>> data;
+    std::ifstream file(path);
+    std::string line;
+
+    bool is_first_line = true;
+    int line_num = 0;
+
+    while (std::getline(file, line)) {
+        line_num++;
+
+        // 跳过表头
+        if (is_first_line) {
+            is_first_line = false;
+            continue;
+        }
+
+        std::stringstream ss(line);
+        std::string cell;
+
+        std::vector<float> row_23;
+        int col_index = 0;
+
+        while (std::getline(ss, cell, ',')) {
+
+            // 去掉前后空白和 \r
+            cell.erase(0, cell.find_first_not_of(" \t\r"));
+            cell.erase(cell.find_last_not_of(" \t\r") + 1);
+
+            // 只处理 2~24 列，即 col_index 1~23
+            if (col_index >= 1 && col_index <= 23) {
+                if (!cell.empty()) {
+                    try {
+                        row_23.push_back(std::stof(cell));
+                    } catch (...) {
+                        std::cout << "Warning: CSV 第 " << line_num
+                                  << " 行第 " << (col_index + 1)
+                                  << " 列无法转换为数字，值='" << cell
+                                  << "'，该行已跳过。\n";
+                        row_23.clear();
+                        break;
+                    }
+                } else {
+                    row_23.push_back(0.0f);  // 空值给默认0，你可以换成需要的默认值
+                }
+            }
+
+            col_index++;
+        }
+
+        // 必须是 23 列
+        if (row_23.size() != 23) {
+            std::cout << "Warning: 第 " << line_num
+                      << " 行有效列数不是23，已跳过。\n";
+            continue;
+        }
+
+        data.push_back(row_23);
+    }
+
+    return data;
+}
+
+void Tangair_usb2can::Read_Clear(int num)
+{
+    uint8_t channel;
+    FrameInfo info_rx;
+    uint8_t data_rx[8] = {0};
+
+    for (int i = 0; i < num; i++)
+    {
+        // 有数据不会阻塞，若无数据则等待0.1s
+        readUSBCAN(USB2CAN0_, &channel, &info_rx, data_rx, 1e5);
+    }
 }
 
 /// @brief 辅助函数
@@ -909,6 +1164,8 @@ float getTimestamp() {
 
     return timestamp;
 }
+
+
 
 // # Copyright (c) 2023-2025 TANGAIR 
 // # SPDX-License-Identifier: Apache-2.0
