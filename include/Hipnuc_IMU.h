@@ -25,7 +25,7 @@ public:
 
 	void IMU_Get_init_quat(int32_t dev);
 
-	void IMU_Get_offset_quat(Eigen::Quaternionf q_desired);
+	void IMU_Get_offset_quat(Eigen::Quaternionf q_desired); //q_desire是仿真里default state时base的四元数
 
 	void IMU_quat_correct(Hipnuc_IMU_Struct &IMU_data);
 

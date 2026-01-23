@@ -25,8 +25,7 @@
 float uint_to_float(int x_int, float x_min, float x_max, int bits);
 int float_to_uint(float x, float x_min, float x_max, int bits);
 
-typedef struct
-{
+typedef struct RS_Motor_Struct{
 	uint8_t master_id;
 	uint8_t motor_id; // => 模块ID
 	uint8_t fault_message;

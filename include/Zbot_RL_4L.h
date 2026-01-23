@@ -1,5 +1,5 @@
-#ifndef __Zbot_RL__
-#define __Zbot_RL__
+#ifndef __Zbot_RL_4L__
+#define __Zbot_RL_4L__
 
 #include "RS_motor.h"
 #include "Hipnuc_IMU.h"
@@ -99,16 +99,19 @@ private:
 	// ************************************************ USB2CAN设备 ************************************************ //
 	
 	int USB2CAN0_;
+	int USB2CAN1_;
+	int USB2CAN2_; // for imu
+	uint8_t imu_module_id = 0x21; // IMU ID
 
 	// ************************************************ 初始化参数 ************************************************ //
 
 	// 编译期常量：需要改维度时，改这里并重新编译
 	static constexpr bool motor_zero_set_already = true; // 注意是否进行过零点设置
 	static constexpr int Motor_Ctrl_Mode = PD_MODE; // 选择电机控制模式
-	static constexpr int motor_dof = 6; //8 // 电机数量
+	static constexpr int motor_dof = 12; // 电机数量
 	static constexpr int action_space = motor_dof; // 策略输出维度 // 类CPG motor_dof * 3
 	static constexpr bool obs_include_command = true;
-	static constexpr bool obs_include_heading_err = false;
+	static constexpr bool obs_include_heading_err = true;
 	static constexpr int observation_space =
 	    4 + motor_dof + motor_dof + action_space + (obs_include_command ? 1 : 0) + (obs_include_heading_err ? 1 : 0);
 
@@ -152,56 +155,36 @@ private:
 	Eigen::Quaternionf Q_desired{0.7070f, 0.0f, -0.7070f, 0.0f}; // (w, x, y, z) // 注意Eigen中四元数赋值的顺序，实数w在首；但是实际上它的内部存储顺序是[x y z w]
     Eigen::Quaternionf Q_offset{Eigen::Quaternionf::Identity()};
 
-    Motor_PDControl_Struct Zbot1234_RL_PD = {
+    Motor_PDControl_Struct Zbot_RL_4L_PD = {
         .Feedforward_Torque = 0.0f,
 		.Tar_Position = 0.0f,
 		.Tar_Velocity = 0.0f,
 		.Kp = 20.0f,
 		.Kd = 2.0f,
     };
-	Motor_PDControl_Struct Zbot5_RL_PD = {
-        .Feedforward_Torque = 0.0f,
-		.Tar_Position = 0.0f,
-		.Tar_Velocity = 0.0f,
-		.Kp = 20.0f,
-		.Kd = 2.0f,
-    };
-	Motor_PDControl_Struct Zbot6_RL_PD = {
-        .Feedforward_Torque = 0.0f,
-		.Tar_Position = 0.0f,
-		.Tar_Velocity = 0.0f,
-		.Kp = 20.0f,
-		.Kd = 2.0f,
-    };
-	// Motor_PDControl_Struct Zbot5_RL_PD = {
-    //     .Feedforward_Torque = 0.0f,
-	// 	.Tar_Position = 0.0f,
-	// 	.Tar_Velocity = 0.0f,
-	// 	.Kp = 25.0f,
-	// 	.Kd = 3.0f,
-    // };
-	// Motor_PDControl_Struct Zbot6_RL_PD = {
-    //     .Feedforward_Torque = 0.0f,
-	// 	.Tar_Position = 0.0f,
-	// 	.Tar_Velocity = 0.0f,
-	// 	.Kp = 70.0f,
-	// 	.Kd = 5.0f,
-    // };
 
 	// ************************************************ 接收线程相关变量和成员 ************************************************ //
 	
 	std::thread _CAN_RX_device_0_thread;
 	void CAN_RX_device_0_thread();
-
     int can_dev0_rx_count;
 	int can_dev0_rx_count_thread;
 
+	std::thread _CAN_RX_device_1_thread;
+	void CAN_RX_device_1_thread();
+    int can_dev1_rx_count;
+	int can_dev1_rx_count_thread;
+
+	std::thread _CAN_RX_device_2_thread;
+	void CAN_RX_device_2_thread();
+    int can_dev2_rx_count;
+	int can_dev2_rx_count_thread;
+
     // CAN转USB设备-接收数据结构体，每个结构体对应不同接收线程，包含两路can共6(8)个模块的电机（和IMU）数据
-	USB2CAN_Dev_Struct DEV0_RX = { std::vector<Module_CAN_Recieve_Struct>(motor_dof) };
-	// USB2CAN_Dev_Struct DEV0_RX = { std::vector<Module_CAN_Recieve_Struct>(6) }; // 包含ID:1～6 的模块数据
-	// // if constexpr 不能用于成员变量声明。必须始终声明该变量以通过编译检查。
-	// // 通过三元运算符控制初始化大小：如果 motor_dof == 12，则分配 6 个空间；否则为 0 ,空vector，几乎不占内存。
-	// USB2CAN_Dev_Struct DEV1_RX = { std::vector<Module_CAN_Recieve_Struct>((motor_dof == 12) ? 6 : 0) }; // 包含ID:7～12 的模块数据
+	USB2CAN_Dev_Struct DEV0_RX = { std::vector<Module_CAN_Recieve_Struct>(6) }; // 更新ID:1～6 的模块数据
+	USB2CAN_Dev_Struct DEV1_RX = { std::vector<Module_CAN_Recieve_Struct>(6) }; // 更新ID:7～12 的模块数据
+	USB2CAN_Dev_Struct DEV2_RX = { std::vector<Module_CAN_Recieve_Struct>(1) }; // 更新base IMU 数据
+
 
 	// ************************************************ 发送线程相关变量和成员 ************************************************ //
 	
@@ -251,6 +234,8 @@ private:
 	// ************************************************ 线程锁 ************************************************ //
 
 	std::mutex mutex_DEV0_RX;
+	std::mutex mutex_DEV1_RX;
+	std::mutex mutex_DEV2_RX;
 	std::mutex mutex_keyboard_input;
 	std::mutex mutex_position_output; 
 	std::mutex mutex_log_strategy_queue;

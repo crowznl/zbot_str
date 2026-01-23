@@ -1,4 +1,4 @@
-#include "Zbot_RL.h"
+#include "Zbot_RL_4L.h"
 #include <termios.h>
 
 static class Hipnuc_IMU IMU;
@@ -33,6 +33,27 @@ Zbot_RL::Zbot_RL()
     else
         std::cout << std::endl
                 << "USB2CAN0 opened ,num=" << USB2CAN0_ << std::endl;
+    
+    USB2CAN1_ = openUSBCAN("/dev/USB2CAN1");
+    if (USB2CAN1_ == -1){
+        std::cout << std::endl
+                  << "USB2CAN1 open INcorrect!!!" << std::endl;
+        closeUSBCAN(USB2CAN0_);
+        exit(1);}
+    else
+        std::cout << std::endl
+                  << "USB2CAN1 opened ,num=" << USB2CAN1_ << std::endl;
+
+    USB2CAN2_ = openUSBCAN("/dev/USB2CAN2");
+    if (USB2CAN2_ == -1){
+        std::cout << std::endl
+                  << "USB2CAN2 open INcorrect!!!" << std::endl;
+        closeUSBCAN(USB2CAN0_);
+        closeUSBCAN(USB2CAN1_);
+        exit(1);}
+    else
+        std::cout << std::endl
+                  << "USB2CAN2 opened ,num=" << USB2CAN2_ << std::endl;
 
     // 启动成功
     std::cout << std::endl
@@ -47,10 +68,12 @@ Zbot_RL::Zbot_RL()
             ALL_Motor_Zero_Set(Delay_1000us);
             sleep(1);
             Read_Clear(USB2CAN0_, 12); // 清理接收缓存
+            Read_Clear(USB2CAN1_, 12);
             ALL_Motor_Angle_Read(Delay_1000us); // 读取当前电机角度检查
 
             std::cout << ">>> Zero Set Finished. Exiting Program... <<<" << std::endl;
             closeUSBCAN(USB2CAN0_); // 关闭CAN设备
+            closeUSBCAN(USB2CAN1_);
             exit(0); // 直接终止进程，不再执行后续的线程创建，对象还没完全建立，析构函数也不会自动运行
             // exit(0) 或 exit(EXIT_SUCCESS) 表示程序正常终止
         }
@@ -59,21 +82,23 @@ Zbot_RL::Zbot_RL()
         {
             ALL_Motor_PP_Init(init_angles); // 使能电机，切换到PP模式，运动到指定角度
             Read_Clear(USB2CAN0_, 30); // 清理接收缓存
+            Read_Clear(USB2CAN1_, 30);
         }
         else if constexpr (Motor_Ctrl_Mode == PD_MODE)
         {
             ALL_Motor_PD_Init(init_angles);
             Read_Clear(USB2CAN0_, 12); // 清理接收缓存
+            Read_Clear(USB2CAN1_, 12);
         }
 
-        IMU.IMU_Set_SYNC_Mode(USB2CAN0_, 1, 0x21); // 设置IMU为SYNC模式
+        IMU.IMU_Set_SYNC_Mode(USB2CAN2_, 1, imu_module_id); // 设置IMU为SYNC模式
         // sleep(0.5);
         sleep(2); // 等待运动到初始位置
 
         for (int i = 0; i < 5; i++) // 采集多次初始IMU四元数数据
         {
-            IMU.IMU_Send_SYNC(USB2CAN0_, 1);
-            IMU.IMU_Get_init_quat(USB2CAN0_);
+            IMU.IMU_Send_SYNC(USB2CAN2_, 1);
+            IMU.IMU_Get_init_quat(USB2CAN2_);
         }
         IMU.IMU_Get_offset_quat(Q_desired); // 计算校正四元数，Q_desired为期望初始四元数，此时朝向角为0
         sleep(1);
@@ -90,6 +115,8 @@ Zbot_RL::Zbot_RL()
             // std::cerr << "CSV 读取失败或数据异常，程序退出。" << std::endl;
             std::cout << "CSV 读取失败或数据异常，程序退出。" << std::endl;
             closeUSBCAN(USB2CAN0_);
+            closeUSBCAN(USB2CAN1_);
+            closeUSBCAN(USB2CAN2_);
             exit(1);
         }
         csv_index = 0;
@@ -105,6 +132,8 @@ Zbot_RL::Zbot_RL()
         model_loaded = false;
         std::cout << "Warning: failed to load policy model: " << e.what() << std::endl;
         closeUSBCAN(USB2CAN0_);
+        closeUSBCAN(USB2CAN1_);
+        closeUSBCAN(USB2CAN2_);
         exit(1);
     }
 #endif
@@ -112,8 +141,10 @@ Zbot_RL::Zbot_RL()
     // 获取当前时间点，使用 steady_clock 避免系统时间跳变影响
     start_tp_ = std::chrono::steady_clock::now();
 
-    // 创建CAN接收线程，设备1
+    // 创建CAN接收线程，设备0, 1, 2
     _CAN_RX_device_0_thread = std::thread(&Zbot_RL::CAN_RX_device_0_thread, this);
+    _CAN_RX_device_1_thread = std::thread(&Zbot_RL::CAN_RX_device_1_thread, this);
+    _CAN_RX_device_2_thread = std::thread(&Zbot_RL::CAN_RX_device_2_thread, this);
 
     // CAN发送线程
     _CAN_TX_thread = std::thread(&Zbot_RL::CAN_TX_thread, this);
@@ -145,8 +176,10 @@ Zbot_RL::~Zbot_RL()
               << "----------------请任意输入，以结束键盘进程  ----------------------" << std::endl
               << std::endl;
    
-    // can接收设备0
+    // can接收设备
     _CAN_RX_device_0_thread.join();
+    _CAN_RX_device_1_thread.join();
+    _CAN_RX_device_2_thread.join();
 
     //can发送测试线程
     _CAN_TX_thread.join();
@@ -163,6 +196,8 @@ Zbot_RL::~Zbot_RL()
 
     // 关闭设备
     closeUSBCAN(USB2CAN0_);
+    closeUSBCAN(USB2CAN1_);
+    closeUSBCAN(USB2CAN2_);
 
     all_thread_done_ = true;
 }
@@ -192,22 +227,7 @@ void Zbot_RL::CAN_RX_device_0_thread()
         {
             can_dev0_rx_count++;
 
-            if (info_rx.frameType == STANDARD) // 读取IMU数据
-            {
-                TEMP_ID = ((info_rx.canID) & 0xfff) - 0x480;
-                uint8_t index = TEMP_ID - 0x21;  // 将ID映射到0开始的索引,DEV0_RX包含ID21的IMU数据
-
-                {
-                    std::lock_guard<std::mutex> lock(mutex_DEV0_RX);
-                    // 收到的数据低字节在前
-                    DEV0_RX.Module_CAN_Recieve[index].IMU_Recieve.quat[0] = static_cast<float>(static_cast<int16_t>((data_rx[1] << 8) | data_rx[0])) / 10000.0f;
-                    DEV0_RX.Module_CAN_Recieve[index].IMU_Recieve.quat[1] = static_cast<float>(static_cast<int16_t>((data_rx[3] << 8) | data_rx[2])) / 10000.0f;
-                    DEV0_RX.Module_CAN_Recieve[index].IMU_Recieve.quat[2] = static_cast<float>(static_cast<int16_t>((data_rx[5] << 8) | data_rx[4])) / 10000.0f;
-                    DEV0_RX.Module_CAN_Recieve[index].IMU_Recieve.quat[3] = static_cast<float>(static_cast<int16_t>((data_rx[7] << 8) | data_rx[6])) / 10000.0f;
-                }
-            }
-
-            else if (info_rx.frameType == EXTENDED) // 读取电机数据
+            if (info_rx.frameType == EXTENDED) // 读取电机数据
             {
                 TEMP_ID = (info_rx.canID >> 8) & 0xff;
                 uint8_t index = TEMP_ID - 0x01;  // 将ID映射到0-5的索引,DEV0_RX包含ID01-ID06的电机数据
@@ -264,6 +284,110 @@ void Zbot_RL::CAN_RX_device_0_thread()
     std::cout << "CAN_RX_device_0_thread  Exit~~" << std::endl;
 }
 
+/// @brief can设备1，接收线程函数
+void Zbot_RL::CAN_RX_device_1_thread()
+{
+    can_dev1_rx_count = 0;
+    can_dev1_rx_count_thread=0;
+    
+    while (running_)
+    {
+
+        uint8_t channel;
+        FrameInfo info_rx;
+        uint8_t data_rx[8] = {0};
+        // 统一暂存ID
+        uint8_t TEMP_ID = 0;
+
+        can_dev1_rx_count_thread++;
+
+        // 有数据不会阻塞，若无数据则等待1s
+        int recieve_re = readUSBCAN(USB2CAN1_, &channel, &info_rx, data_rx, 1e6);
+
+        // 接收到数据
+        if (recieve_re != -1)
+        {
+            can_dev1_rx_count++;
+
+            if (info_rx.frameType == EXTENDED) // 读取电机数据
+            {
+                TEMP_ID = (info_rx.canID >> 8) & 0xff;
+                uint8_t index = TEMP_ID - 0x07;  // 将ID映射到0-5的索引,DEV1_RX包含ID07-ID12的电机数据
+
+                {
+                    std::lock_guard<std::mutex> lock(mutex_DEV1_RX);
+                    // 解码
+                    DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.master_id = (info_rx.canID) & 0xff;
+                    DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.motor_id = (info_rx.canID >> 8) & 0xff;
+                    DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.fault_message = (info_rx.canID >> 16) & 0x3f;
+                    DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.motor_state = (info_rx.canID >> 22) & 0x03;
+                    DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.mode = (info_rx.canID >> 24) & 0x1f;
+
+                    if (DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.mode == 0x02)
+                    {
+                        // 收到的数据高字节在前
+                        DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.current_position = (data_rx[0] << 8) | (data_rx[1]);
+                        DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.current_speed = (data_rx[2] << 8) | (data_rx[3]);
+                        DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.current_torque = (data_rx[4] << 8) | (data_rx[5]);
+                        DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.current_temp = (data_rx[6] << 8) | (data_rx[7]);
+
+                        // 转换
+                        DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.current_position_f = -uint_to_float(DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.current_position, (P_MIN), (P_MAX), 16); // 电机顺时针为角度增加，所以加负号
+                        DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.current_speed_f = -uint_to_float(DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.current_speed, (V_MIN), (V_MAX), 16); // 电机顺时针为角度增加，所以加负号
+                        DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.current_torque_f = -uint_to_float(DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.current_torque, (T_MIN), (T_MAX), 16); // 电机顺时针为角度增加，所以加负号
+                        DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.current_temp_f = (float)DEV1_RX.Module_CAN_Recieve[index].Motor_Recieve.current_temp / 10;
+                    }
+                }
+            }
+        }
+    }
+    std::cout << "CAN_RX_device_1_thread  Exit~~" << std::endl;
+}
+
+/// @brief can设备2，接收线程函数
+void Zbot_RL::CAN_RX_device_2_thread()
+{
+    can_dev2_rx_count = 0;
+    can_dev2_rx_count_thread=0;
+    
+    while (running_)
+    {
+
+        uint8_t channel;
+        FrameInfo info_rx;
+        uint8_t data_rx[8] = {0};
+        // 统一暂存ID
+        uint8_t TEMP_ID = 0;
+
+        can_dev2_rx_count_thread++;
+
+        // 有数据不会阻塞，若无数据则等待1s
+        int recieve_re = readUSBCAN(USB2CAN2_, &channel, &info_rx, data_rx, 1e6);
+
+        // 接收到数据
+        if (recieve_re != -1)
+        {
+            can_dev2_rx_count++;
+
+            if (info_rx.frameType == STANDARD) // 读取IMU数据
+            {
+                TEMP_ID = ((info_rx.canID) & 0xfff) - 0x480;
+                uint8_t index = TEMP_ID - imu_module_id;  // 将ID映射到0开始的索引,DEV0_RX包含ID21的IMU数据
+
+                {
+                    std::lock_guard<std::mutex> lock(mutex_DEV2_RX);
+                    // 收到的数据低字节在前
+                    DEV2_RX.Module_CAN_Recieve[index].IMU_Recieve.quat[0] = static_cast<float>(static_cast<int16_t>((data_rx[1] << 8) | data_rx[0])) / 10000.0f;
+                    DEV2_RX.Module_CAN_Recieve[index].IMU_Recieve.quat[1] = static_cast<float>(static_cast<int16_t>((data_rx[3] << 8) | data_rx[2])) / 10000.0f;
+                    DEV2_RX.Module_CAN_Recieve[index].IMU_Recieve.quat[2] = static_cast<float>(static_cast<int16_t>((data_rx[5] << 8) | data_rx[4])) / 10000.0f;
+                    DEV2_RX.Module_CAN_Recieve[index].IMU_Recieve.quat[3] = static_cast<float>(static_cast<int16_t>((data_rx[7] << 8) | data_rx[6])) / 10000.0f;
+                }
+            }
+        }
+    }
+    std::cout << "CAN_RX_device_2_thread  Exit~~" << std::endl;
+}
+
 // can发送线程函数
 void Zbot_RL::CAN_TX_thread()
 {
@@ -275,7 +399,7 @@ void Zbot_RL::CAN_TX_thread()
         // CAN发送计数
         tx_count++;
 
-        IMU.IMU_Send_SYNC(USB2CAN0_, 1); // 发送IMU同步帧
+        IMU.IMU_Send_SYNC(USB2CAN2_, 1); // 发送IMU同步帧
         std::this_thread::sleep_for(std::chrono::microseconds(Delay_300us)); // 单位us
 
         // 拷贝策略线程计算得到的输出
@@ -292,7 +416,7 @@ void Zbot_RL::CAN_TX_thread()
 
         if constexpr (Motor_Ctrl_Mode == PD_MODE)
         {
-            ALL_Motor_PD_Control(Delay_300us, motor_angles);
+            ALL_Motor_PD_Control(Delay_300us, motor_angles); // <<================================================================ 测试一下Delay多少合适
             // ALL_Motor_PD_Control(Delay_300us, init_angles);
         }
         else if constexpr (Motor_Ctrl_Mode == PP_MODE)
@@ -331,6 +455,8 @@ void Zbot_RL::CAN_TX_thread()
             // }
             std::cout << " 发送次数:               " << tx_count << std::endl
                       << " CAN转USB设备0 接收次数: " << can_dev0_rx_count << std::endl
+                      << " CAN转USB设备1 接收次数: " << can_dev1_rx_count << std::endl
+                      << " CAN转USB设备2 接收次数: " << can_dev2_rx_count << std::endl
                       << " TIME:                  " << getTimestamp() << "s" << std::endl
                       << " ***************************************************************** " << std::endl;
         }
@@ -429,30 +555,26 @@ void Zbot_RL::Strategy_thread()
         // 读取必要数据并计算输出
         {
             std::lock_guard<std::mutex> lock(mutex_DEV0_RX);
-            IMU.IMU_quat_correct(DEV0_RX.Module_CAN_Recieve[0].IMU_Recieve); // 四元数校正
-
-            cur_quat_w = DEV0_RX.Module_CAN_Recieve[0].IMU_Recieve.quat[0];
-            cur_quat_x = DEV0_RX.Module_CAN_Recieve[0].IMU_Recieve.quat[1];
-            cur_quat_y = DEV0_RX.Module_CAN_Recieve[0].IMU_Recieve.quat[2];
-            cur_quat_z = DEV0_RX.Module_CAN_Recieve[0].IMU_Recieve.quat[3];
-
-            // cur_pos[0] = DEV0_RX.Module_CAN_Recieve[0].Motor_Recieve.current_position_f;
-            // cur_pos[1] = DEV0_RX.Module_CAN_Recieve[1].Motor_Recieve.current_position_f;
-            // cur_pos[2] = DEV0_RX.Module_CAN_Recieve[2].Motor_Recieve.current_position_f;
-            // cur_pos[3] = DEV0_RX.Module_CAN_Recieve[3].Motor_Recieve.current_position_f;
-            // cur_pos[4] = DEV0_RX.Module_CAN_Recieve[4].Motor_Recieve.current_position_f;
-            // cur_pos[5] = DEV0_RX.Module_CAN_Recieve[5].Motor_Recieve.current_position_f;
-
-            // cur_vel[0] = DEV0_RX.Module_CAN_Recieve[0].Motor_Recieve.current_speed_f;
-            // cur_vel[1] = DEV0_RX.Module_CAN_Recieve[1].Motor_Recieve.current_speed_f;
-            // cur_vel[2] = DEV0_RX.Module_CAN_Recieve[2].Motor_Recieve.current_speed_f;
-            // cur_vel[3] = DEV0_RX.Module_CAN_Recieve[3].Motor_Recieve.current_speed_f;
-            // cur_vel[4] = DEV0_RX.Module_CAN_Recieve[4].Motor_Recieve.current_speed_f;
-            // cur_vel[5] = DEV0_RX.Module_CAN_Recieve[5].Motor_Recieve.current_speed_f;
-            for (size_t i = 0; i < static_cast<size_t>(motor_dof); ++i) {
+            for (int i = 0; i < 6; ++i) {
                  cur_pos[i] = DEV0_RX.Module_CAN_Recieve[i].Motor_Recieve.current_position_f;
                  cur_vel[i] = DEV0_RX.Module_CAN_Recieve[i].Motor_Recieve.current_speed_f;
             }
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_DEV1_RX);
+            for (int i = 0; i < 6; ++i) {
+                 cur_pos[i+6] = DEV1_RX.Module_CAN_Recieve[i].Motor_Recieve.current_position_f;
+                 cur_vel[i+6] = DEV1_RX.Module_CAN_Recieve[i].Motor_Recieve.current_speed_f;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_DEV2_RX);
+            IMU.IMU_quat_correct(DEV2_RX.Module_CAN_Recieve[0].IMU_Recieve); // 四元数校正
+
+            cur_quat_w = DEV2_RX.Module_CAN_Recieve[0].IMU_Recieve.quat[0];
+            cur_quat_x = DEV2_RX.Module_CAN_Recieve[0].IMU_Recieve.quat[1];
+            cur_quat_y = DEV2_RX.Module_CAN_Recieve[0].IMU_Recieve.quat[2];
+            cur_quat_z = DEV2_RX.Module_CAN_Recieve[0].IMU_Recieve.quat[3];
         }
         // std::cout << " IMU四元数: [" << cur_quat_w << "," << cur_quat_x << "," << cur_quat_y << "," << cur_quat_z << "]" << std::endl;
 
@@ -502,25 +624,14 @@ void Zbot_RL::Strategy_thread()
 
                     if constexpr (obs_include_heading_err)
                     {   // 计算heading_err
-                        // // Eigen::Quaternionf q_current(cur_quat_w, cur_quat_x, cur_quat_y, cur_quat_z);
-                        // // Eigen::Vector3f axis_x(1.0f, 0.0f, 0.0f);
-                        // // Eigen::Vector3f base_dir_forward_w = q_current * axis_x;
-                        // // float current_yaw = std::atan2(base_dir_forward_w.y(), base_dir_forward_w.x());
-                        // // 直接使用四元数转Yaw角公式: atan2(2(wz + xy), 1 - 2(y^2 + z^2))
-                        // float current_yaw = std::atan2(2.0f * (cur_quat_w * cur_quat_z + cur_quat_x * cur_quat_y),
-                        //                                1.0f - 2.0f * (cur_quat_y * cur_quat_y + cur_quat_z * cur_quat_z));
-                        
-                        // base body axis z point to world Y: forward = cross(gravity, base_z)
                         // Eigen::Quaternionf q_current(cur_quat_w, cur_quat_x, cur_quat_y, cur_quat_z);
-                        // Eigen::Vector3f axis_z(0.0f, 0.0f, 1.0f);
-                        // Eigen::Vector3f base_shoulder_w = q_current * axis_z;
-                        // Eigen::Vector3f gravity_vec_w(0.0f, 0.0f, -1.0f); 
-                        // Eigen::Vector3f base_dir_forward_w = gravity_vec_w.cross(base_shoulder_w);
+                        // Eigen::Vector3f axis_x(1.0f, 0.0f, 0.0f);
+                        // Eigen::Vector3f base_dir_forward_w = q_current * axis_x;
                         // float current_yaw = std::atan2(base_dir_forward_w.y(), base_dir_forward_w.x());
-                        // Using algebraic simplification for efficiency // (0,0,−1)×(x,y,z)=(y, −x, 0)
-                        float base_z_x = 2.0f * (cur_quat_x * cur_quat_z + cur_quat_w * cur_quat_y);
-                        float base_z_y = 2.0f * (cur_quat_y * cur_quat_z - cur_quat_w * cur_quat_x);
-                        float current_yaw = std::atan2(-base_z_x, base_z_y);
+                        // 直接使用四元数转Yaw角公式: atan2(2(wz + xy), 1 - 2(y^2 + z^2))
+                        float current_yaw = std::atan2(2.0f * (cur_quat_w * cur_quat_z + cur_quat_x * cur_quat_y),
+                                                       1.0f - 2.0f * (cur_quat_y * cur_quat_y + cur_quat_z * cur_quat_z));
+
                         float diff;
                         {
                             std::lock_guard<std::mutex> lock(mutex_keyboard_input); 
@@ -758,19 +869,37 @@ void Zbot_RL::ALL_Motor_ENABLE(int delay_us)
     Motor.Motor_Enable(USB2CAN0_, 2, 0x01);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
+    Motor.Motor_Enable(USB2CAN1_, 2, 0x07);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
     Motor.Motor_Enable(USB2CAN0_, 1, 0x04);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor.Motor_Enable(USB2CAN1_, 1, 0x10);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
     Motor.Motor_Enable(USB2CAN0_, 2, 0x02);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
+    Motor.Motor_Enable(USB2CAN1_, 2, 0x08);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
     Motor.Motor_Enable(USB2CAN0_, 1, 0x05);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor.Motor_Enable(USB2CAN1_, 1, 0x11);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
     Motor.Motor_Enable(USB2CAN0_, 2, 0x03);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
+    Motor.Motor_Enable(USB2CAN1_, 2, 0x09);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
     Motor.Motor_Enable(USB2CAN0_, 1, 0x06);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor.Motor_Enable(USB2CAN1_, 1, 0x12);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 }
 
@@ -779,19 +908,37 @@ void Zbot_RL::ALL_Motor_DISABLE(int delay_us)
     Motor.Motor_Disable(USB2CAN0_, 2, 0x01);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
+    Motor.Motor_Disable(USB2CAN1_, 2, 0x07);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
     Motor.Motor_Disable(USB2CAN0_, 1, 0x04);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor.Motor_Disable(USB2CAN1_, 1, 0x10);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
     Motor.Motor_Disable(USB2CAN0_, 2, 0x02);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
+    Motor.Motor_Disable(USB2CAN1_, 2, 0x08);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
     Motor.Motor_Disable(USB2CAN0_, 1, 0x05);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor.Motor_Disable(USB2CAN1_, 1, 0x11);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
     Motor.Motor_Disable(USB2CAN0_, 2, 0x03);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
+    Motor.Motor_Disable(USB2CAN1_, 2, 0x09);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
     Motor.Motor_Disable(USB2CAN0_, 1, 0x06);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor.Motor_Disable(USB2CAN1_, 1, 0x12);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 }
 
@@ -800,19 +947,37 @@ void Zbot_RL::ALL_Motor_PP_Mode_Set(int delay_us)
     Motor.PP_Mode_Set(USB2CAN0_, 2, 0x01, 20.0f, 30.0f, delay_us);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
 
+    Motor.PP_Mode_Set(USB2CAN1_, 2, 0x07, 20.0f, 30.0f, delay_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
     Motor.PP_Mode_Set(USB2CAN0_, 1, 0x04, 20.0f, 30.0f, delay_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    Motor.PP_Mode_Set(USB2CAN1_, 1, 0x10, 20.0f, 30.0f, delay_us);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
 
     Motor.PP_Mode_Set(USB2CAN0_, 2, 0x02, 20.0f, 30.0f, delay_us);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
 
+    Motor.PP_Mode_Set(USB2CAN1_, 2, 0x08, 20.0f, 30.0f, delay_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
     Motor.PP_Mode_Set(USB2CAN0_, 1, 0x05, 20.0f, 30.0f, delay_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    Motor.PP_Mode_Set(USB2CAN1_, 1, 0x11, 20.0f, 30.0f, delay_us);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
 
     Motor.PP_Mode_Set(USB2CAN0_, 2, 0x03, 20.0f, 30.0f, delay_us);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
 
+    Motor.PP_Mode_Set(USB2CAN1_, 2, 0x09, 20.0f, 30.0f, delay_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
     Motor.PP_Mode_Set(USB2CAN0_, 1, 0x06, 20.0f, 30.0f, delay_us);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    Motor.PP_Mode_Set(USB2CAN1_, 1, 0x12, 20.0f, 30.0f, delay_us);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
 }
 
@@ -821,19 +986,37 @@ void Zbot_RL::ALL_Motor_PP_Angle_Set(int delay_us, std::vector<float> motor_angl
     Motor.PP_Angle_Set(USB2CAN0_, 2, 0x01, -motor_angles[0]); // 电机顺时针为角度增加，所以加负号
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
 
+    Motor.PP_Angle_Set(USB2CAN1_, 2, 0x07, -motor_angles[6]); // 电机顺时针为角度增加，所以加负号
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
     Motor.PP_Angle_Set(USB2CAN0_, 1, 0x04, -motor_angles[3]); // 电机顺时针为角度增加，所以加负号
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    Motor.PP_Angle_Set(USB2CAN1_, 1, 0x10, -motor_angles[9]); // 电机顺时针为角度增加，所以加负号
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
 
     Motor.PP_Angle_Set(USB2CAN0_, 2, 0x02, -motor_angles[1]); // 电机顺时针为角度增加，所以加负号
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
 
+    Motor.PP_Angle_Set(USB2CAN1_, 2, 0x08, -motor_angles[7]); // 电机顺时针为角度增加，所以加负号
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
     Motor.PP_Angle_Set(USB2CAN0_, 1, 0x05, -motor_angles[4]); // 电机顺时针为角度增加，所以加负号
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    Motor.PP_Angle_Set(USB2CAN1_, 1, 0x11, -motor_angles[10]); // 电机顺时针为角度增加，所以加负号
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
 
     Motor.PP_Angle_Set(USB2CAN0_, 2, 0x03, -motor_angles[2]); // 电机顺时针为角度增加，所以加负号
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
 
+    Motor.PP_Angle_Set(USB2CAN1_, 2, 0x09, -motor_angles[8]); // 电机顺时针为角度增加，所以加负号
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
     Motor.PP_Angle_Set(USB2CAN0_, 1, 0x06, -motor_angles[5]); // 电机顺时针为角度增加，所以加负号
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+
+    Motor.PP_Angle_Set(USB2CAN1_, 1, 0x12, -motor_angles[11]); // 电机顺时针为角度增加，所以加负号
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
 }
 
@@ -853,19 +1036,37 @@ void Zbot_RL::ALL_Motor_Zero_Set(int delay_us)
     Motor.Motor_Zero_Set(USB2CAN0_, 2, 0x01);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
+    Motor.Motor_Zero_Set(USB2CAN1_, 2, 0x07);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
     Motor.Motor_Zero_Set(USB2CAN0_, 1, 0x04);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor.Motor_Zero_Set(USB2CAN1_, 1, 0x10);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
     Motor.Motor_Zero_Set(USB2CAN0_, 2, 0x02);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
+    Motor.Motor_Zero_Set(USB2CAN1_, 2, 0x08);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
     Motor.Motor_Zero_Set(USB2CAN0_, 1, 0x05);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor.Motor_Zero_Set(USB2CAN1_, 1, 0x11);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
     Motor.Motor_Zero_Set(USB2CAN0_, 2, 0x03);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
+    Motor.Motor_Zero_Set(USB2CAN1_, 2, 0x09);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
     Motor.Motor_Zero_Set(USB2CAN0_, 1, 0x06);
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    Motor.Motor_Zero_Set(USB2CAN1_, 1, 0x12);
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 }
 
@@ -874,19 +1075,37 @@ void Zbot_RL::ALL_Motor_Angle_Read(int delay_us)
     std::cout << "Motor 01 Angle: " << Motor.Angle_Read(USB2CAN0_, 2, 0x01) << std::endl;
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
+    std::cout << "Motor 07 Angle: " << Motor.Angle_Read(USB2CAN1_, 2, 0x07) << std::endl;
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
     std::cout << "Motor 04 Angle: " << Motor.Angle_Read(USB2CAN0_, 1, 0x04) << std::endl;
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    std::cout << "Motor 10 Angle: " << Motor.Angle_Read(USB2CAN1_, 1, 0x10) << std::endl;
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
     std::cout << "Motor 02 Angle: " << Motor.Angle_Read(USB2CAN0_, 2, 0x02) << std::endl;
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
+    std::cout << "Motor 08 Angle: " << Motor.Angle_Read(USB2CAN1_, 2, 0x08) << std::endl;
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
     std::cout << "Motor 05 Angle: " << Motor.Angle_Read(USB2CAN0_, 1, 0x05) << std::endl;
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    std::cout << "Motor 11 Angle: " << Motor.Angle_Read(USB2CAN1_, 1, 0x11) << std::endl;
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
     std::cout << "Motor 03 Angle: " << Motor.Angle_Read(USB2CAN0_, 2, 0x03) << std::endl;
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 
+    std::cout << "Motor 09 Angle: " << Motor.Angle_Read(USB2CAN1_, 2, 0x09) << std::endl;
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us 
+
     std::cout << "Motor 06 Angle: " << Motor.Angle_Read(USB2CAN0_, 1, 0x06) << std::endl;
+    std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
+
+    std::cout << "Motor 12 Angle: " << Motor.Angle_Read(USB2CAN1_, 1, 0x12) << std::endl;
     std::this_thread::sleep_for(std::chrono::microseconds(delay_us)); // 单位us
 }
 
@@ -902,27 +1121,51 @@ void Zbot_RL::ALL_Motor_PD_Control(int delay_us, std::vector<float> motor_angles
 {
     auto t = std::chrono::high_resolution_clock::now();//这一句耗时50us
 
-    Motor.Motor_PD_Control(USB2CAN0_, 2, 0x01, &Zbot1234_RL_PD, -motor_angles[0]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN0_, 2, 0x01, &Zbot_RL_4L_PD, -motor_angles[0]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN0_, 1, 0x04, &Zbot1234_RL_PD, -motor_angles[3]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN1_, 2, 0x07, &Zbot_RL_4L_PD, -motor_angles[6]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN0_, 2, 0x02, &Zbot1234_RL_PD, -motor_angles[1]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN0_, 1, 0x04, &Zbot_RL_4L_PD, -motor_angles[3]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN0_, 1, 0x05, &Zbot5_RL_PD, -motor_angles[4]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN1_, 1, 0x10, &Zbot_RL_4L_PD, -motor_angles[9]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN0_, 2, 0x03, &Zbot1234_RL_PD, -motor_angles[2]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN0_, 2, 0x02, &Zbot_RL_4L_PD, -motor_angles[1]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN0_, 1, 0x06, &Zbot6_RL_PD, -motor_angles[5]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN1_, 2, 0x08, &Zbot_RL_4L_PD, -motor_angles[7]); // 电机顺时针为角度增加，所以加负号
+    t += std::chrono::microseconds(delay_us);
+    std::this_thread::sleep_until(t);
+
+    Motor.Motor_PD_Control(USB2CAN0_, 1, 0x05, &Zbot_RL_4L_PD, -motor_angles[4]); // 电机顺时针为角度增加，所以加负号
+    t += std::chrono::microseconds(delay_us);
+    std::this_thread::sleep_until(t);
+
+    Motor.Motor_PD_Control(USB2CAN1_, 1, 0x11, &Zbot_RL_4L_PD, -motor_angles[10]); // 电机顺时针为角度增加，所以加负号
+    t += std::chrono::microseconds(delay_us);
+    std::this_thread::sleep_until(t);
+
+    Motor.Motor_PD_Control(USB2CAN0_, 2, 0x03, &Zbot_RL_4L_PD, -motor_angles[2]); // 电机顺时针为角度增加，所以加负号
+    t += std::chrono::microseconds(delay_us);
+    std::this_thread::sleep_until(t);
+
+    Motor.Motor_PD_Control(USB2CAN1_, 2, 0x09, &Zbot_RL_4L_PD, -motor_angles[8]); // 电机顺时针为角度增加，所以加负号
+    t += std::chrono::microseconds(delay_us);
+    std::this_thread::sleep_until(t);
+
+    Motor.Motor_PD_Control(USB2CAN0_, 1, 0x06, &Zbot_RL_4L_PD, -motor_angles[5]); // 电机顺时针为角度增加，所以加负号
+    t += std::chrono::microseconds(delay_us);
+    std::this_thread::sleep_until(t);
+
+    Motor.Motor_PD_Control(USB2CAN1_, 1, 0x12, &Zbot_RL_4L_PD, -motor_angles[11]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 }

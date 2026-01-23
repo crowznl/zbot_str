@@ -21,6 +21,9 @@
 #ifdef USE_MOTOR_TEST
     #include "Motor_test.h"
     using AppType = Motor_test;
+#elif defined(USE_ZBOT_RL_4L)
+    #include "Zbot_RL_4L.h"
+    using AppType = Zbot_RL;
 #else
     #include "Zbot_RL.h"
     using AppType = Zbot_RL;

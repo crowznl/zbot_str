@@ -22,8 +22,12 @@ option(USE_LIBTORCH "Enable linking with LibTorch (TorchScript)" ON)
 
 if (USE_LIBTORCH)
     if (NOT DEFINED CMAKE_PREFIX_PATH OR CMAKE_PREFIX_PATH STREQUAL "")
-        set(CMAKE_PREFIX_PATH "/home/rain/libtorch" CACHE PATH "Path to LibTorch")
-        message(STATUS "CMAKE_PREFIX_PATH not provided, using /home/rain/libtorch")
+        if (DEFINED ENV{LIBTORCH_DIR})
+            set(CMAKE_PREFIX_PATH $ENV{LIBTORCH_DIR} CACHE PATH "Path to LibTorch")
+            message(STATUS "Using LibTorch from environment variable LIBTORCH_DIR: $ENV{LIBTORCH_DIR}")
+        else()
+            message(WARNING "CMAKE_PREFIX_PATH not set. Please run cmake with -DCMAKE_PREFIX_PATH=/path/to/libtorch OR set env var LIBTORCH_DIR in .bashrc .")
+        endif()
     endif()
 endif()
 
@@ -31,6 +35,7 @@ endif()
 # Motor_test 选项（默认 OFF）
 # ========================
 option(USE_MOTOR_TEST "Use Motor_test instead of Zbot_RL" OFF)
+option(USE_ZBOT_RL_4L "Use Zbot_RL_4L (Quadruped) instead of Zbot_RL" OFF)
 
 # ========================
 # 源文件
@@ -38,10 +43,16 @@ option(USE_MOTOR_TEST "Use Motor_test instead of Zbot_RL" OFF)
 set(SOURCES
     src/Hipnuc_IMU.cpp
     src/RS_motor.cpp
-    src/Zbot_RL.cpp
     src/can_node.cpp
-    src/Motor_test.cpp
 )
+
+if (USE_MOTOR_TEST)
+    list(APPEND SOURCES src/Motor_test.cpp)
+elseif (USE_ZBOT_RL_4L)
+    list(APPEND SOURCES src/Zbot_RL_4L.cpp)
+else()
+    list(APPEND SOURCES src/Zbot_RL.cpp)
+endif()
 
 # ========================
 # 可执行文件
@@ -50,6 +61,10 @@ add_executable(can_node ${SOURCES})
 
 if (USE_MOTOR_TEST)
     target_compile_definitions(can_node PRIVATE USE_MOTOR_TEST)
+endif()
+
+if (USE_ZBOT_RL_4L)
+    target_compile_definitions(can_node PRIVATE USE_ZBOT_RL_4L)
 endif()
 
 # ★ 强制使用 C++17（std::clamp 必需）
