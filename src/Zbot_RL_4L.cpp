@@ -7,7 +7,7 @@ static class RS_Motor Motor;
 // 主函数循环
 void Zbot_RL::Spin()
 {
-    while (all_thread_done_ != true)
+    while (!g_stop.load(std::memory_order_relaxed))
     {
         sleep(1); // 延时1s
     }
@@ -19,7 +19,6 @@ void Zbot_RL::Spin()
 Zbot_RL::Zbot_RL()
 {
     running_ = true;
-    all_thread_done_ = false;
 
     std::cout << std::endl
             << "RUN Zbot_RL.cpp" << std::endl
@@ -198,8 +197,6 @@ Zbot_RL::~Zbot_RL()
     closeUSBCAN(USB2CAN0_);
     closeUSBCAN(USB2CAN1_);
     closeUSBCAN(USB2CAN2_);
-
-    all_thread_done_ = true;
 }
 
 /// @brief can设备0，接收线程函数

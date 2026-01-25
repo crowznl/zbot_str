@@ -7,17 +7,26 @@
 # 前期准备
 ## 0. Libtorch
  由于通信程序采用C++,本程序使用Libtorch进行策略部署，请安装Libtorch。
+
+ 在Jetson设备上安装和使用LibTorch，需要特别注意其ARM架构（aarch64）与官方提供的libtorch.so预编译x86版本不兼容。先正确安装torch，在手动提取lib、include、share、bin文件夹复制到Libtorch目录下，并添加export到bashrc。从而确保CMakeLists.txt中的libtorch路径正确。
+ ```bash
+ # <your-path>/python3.10/site-packages/torch/lib/ 
+ # <your-path>/python3.10/site-packages/torch/include/ 
+ # <your-path>/python3.10/site-packages/torch/share/
+ # <your-path>/python3.10/site-packages/torch/bin/
+ ```
 ## 1. 硬件准备
 本程序需要与肥猫机器人公司USB2CAN模块配合使用，请准备好模块与模块说明书、模块SDK，`并按照说明书使用install.sh文件安装USB2CAN规则文件，或手动安装规则文件，安装方法：`
-1. 进入项目目录下的can文件夹
+1. 进入项目目录下的can文件夹，选择解压SDK压缩包
 ```bash
-cd USB2CAN-Demo-Lingzu/can
+cd ./usb2can
 ```
-2. 复制规则文件usb_can.rules 到/etc/udev/rules.d/
+1. 运行 install.sh 或手动复制相关文件
 ```bash
-sudo cp usb_can.rules /etc/udev/rules.d/
+sudo chmod +x install.sh
+./install.sh
 ```
-3. 运行下面的命令，使udev规则生效
+1. 运行下面的命令，使udev规则生效
 ```bash
 sudo udevadm trigger
 ```

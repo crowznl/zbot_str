@@ -12,7 +12,6 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 # ========================
 include_directories(
     include
-    can
 )
 
 # ========================
@@ -96,8 +95,3 @@ endif()
 set_target_properties(can_node PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/build
 )
-
-# # ========================
-# # 安装（可选）
-# # ========================
-# install(TARGETS can_node DESTINATION bin)

@@ -3,10 +3,12 @@
 
 #include "RS_motor.h"
 #include "Hipnuc_IMU.h"
+#include <atomic>
 #include <queue>
 #include <mutex>
 #include <unistd.h> 
 #include <thread>
+#include <vector>
 #include <fstream> 
 #include <iomanip> 
 #include <iostream>
@@ -31,6 +33,8 @@
 
 #define PD_MODE 0
 #define PP_MODE 1
+
+extern std::atomic<bool> g_stop; // 全局停止标志
 
 // 读取csv文件：返回二维float向量；若读取/解析出错则 load_ok=false  // 现在看好像搞那个布尔引用有点多余了，直接判断return 空 就行了。
 // 注意：这是一个全局函数，不是类成员函数；observation_space 是类内常量，不能在该函数内部直接访问，需要从调用处显式传入。
@@ -92,8 +96,7 @@ private:
 	std::chrono::steady_clock::time_point start_tp_;
 
     // ************************************************ 线程标志位 ************************************************ //
-	
-	bool all_thread_done_;
+
 	bool running_;
 
 	// ************************************************ USB2CAN设备 ************************************************ //

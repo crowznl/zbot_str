@@ -7,7 +7,8 @@ static class RS_Motor Motor;
 // 主函数循环
 void Zbot_RL::Spin()
 {
-    while (all_thread_done_ != true)
+    // while (all_thread_done_ != true)
+    while (!g_stop.load(std::memory_order_relaxed))
     {
         sleep(1); // 延时1s
     }
@@ -19,7 +20,7 @@ void Zbot_RL::Spin()
 Zbot_RL::Zbot_RL()
 {
     running_ = true;
-    all_thread_done_ = false;
+    // all_thread_done_ = false;
 
     std::cout << std::endl
             << "RUN Zbot_RL.cpp" << std::endl
@@ -164,7 +165,7 @@ Zbot_RL::~Zbot_RL()
     // 关闭设备
     closeUSBCAN(USB2CAN0_);
 
-    all_thread_done_ = true;
+    // all_thread_done_ = true;
 }
 
 /// @brief can设备0，接收线程函数
@@ -595,6 +596,10 @@ void Zbot_RL::Strategy_thread()
                         std::cout << " 策略输出" << (i+1) << "的角度: " << relative_vec[i] + init_angles[i] << std::endl;
                         // 理论上position_output和motor_angles是一致的，
                         // 只不过motor_angles加的限幅可能和position_output（relative_tensor）的不一致。
+                    }
+                    {   // 只打印一次
+                        std::lock_guard<std::mutex> lock(mutex_keyboard_input); 
+                        print_info_flag = !print_info_flag;
                     }
                 }
 

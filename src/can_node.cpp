@@ -30,10 +30,12 @@
 #endif
 
 std::shared_ptr<AppType> App_ptr;
+std::atomic<bool> g_stop{false};
 
 void signal_callback_handler(int)
 {
-    App_ptr->~AppType(); 
+    // App_ptr->~AppType(); 
+    g_stop.store(true, std::memory_order_relaxed);
 }
 
 int main()
@@ -50,6 +52,7 @@ int main()
 
     App_ptr->Spin();
 
+    App_ptr.reset();
     return 0;
 }
 
