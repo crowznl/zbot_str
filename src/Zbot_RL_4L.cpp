@@ -704,6 +704,10 @@ void Zbot_RL::Strategy_thread()
                         // 理论上position_output和motor_angles是一致的，
                         // 只不过motor_angles加的限幅可能和position_output（relative_tensor）的不一致。
                     }
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_keyboard_input); 
+                        print_info_flag = !print_info_flag;
+                    }
                 }
 
                 if constexpr (log_enabled && log_data_type == LOG_STRATEGY)
