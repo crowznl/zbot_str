@@ -227,7 +227,8 @@ void Zbot_RL::CAN_RX_device_0_thread()
             if (info_rx.frameType == EXTENDED) // 读取电机数据
             {
                 TEMP_ID = (info_rx.canID >> 8) & 0xff;
-                uint8_t index = TEMP_ID - 0x01;  // 将ID映射到0-5的索引,DEV0_RX包含ID01-ID06的电机数据
+                // uint8_t index = TEMP_ID - 0x01;  // 将ID映射到0-5的索引,DEV0_RX包含ID01-ID06的电机数据
+                uint8_t index = TEMP_ID - 0x0a;  // 将ID映射到0-5的索引,DEV0_RX包含ID10-ID15的电机数据
 
                 {
                     std::lock_guard<std::mutex> lock(mutex_DEV0_RX);
@@ -309,7 +310,8 @@ void Zbot_RL::CAN_RX_device_1_thread()
             if (info_rx.frameType == EXTENDED) // 读取电机数据
             {
                 TEMP_ID = (info_rx.canID >> 8) & 0xff;
-                uint8_t index = TEMP_ID - 0x07;  // 将ID映射到0-5的索引,DEV1_RX包含ID07-ID12的电机数据
+                // uint8_t index = TEMP_ID - 0x07;  // 将ID映射到0-5的索引,DEV1_RX包含ID07-ID12的电机数据
+                uint8_t index = TEMP_ID - 0x14;  // 将ID映射到0-5的索引,DEV1_RX包含ID20-ID25的电机数据
 
                 {
                     std::lock_guard<std::mutex> lock(mutex_DEV1_RX);
@@ -604,13 +606,27 @@ void Zbot_RL::Strategy_thread()
                     invec.push_back(cur_quat_z);
 
                     // 电机相对位置/速度（按 motor_dof 数量）
-                    for (size_t i = 0; i < static_cast<size_t>(motor_dof); ++i)
+                    // for (size_t i = 0; i < static_cast<size_t>(motor_dof); ++i)
+                    // {
+                    //     invec.push_back(cur_pos[i] - init_angles[i]);
+                    // }
+                    // for (size_t i = 0; i < static_cast<size_t>(motor_dof); ++i)
+                    // {
+                    //     invec.push_back(cur_vel[i]);
+                    // }
+                    for (size_t i = 0; i < 4; ++i)
                     {
                         invec.push_back(cur_pos[i] - init_angles[i]);
+                        invec.push_back(cur_pos[i+3] - init_angles[i+3]);
+                        invec.push_back(cur_pos[i+6] - init_angles[i+6]);
+                        invec.push_back(cur_pos[i+9] - init_angles[i+9]);
                     }
-                    for (size_t i = 0; i < static_cast<size_t>(motor_dof); ++i)
+                    for (size_t i = 0; i < 4; ++i)
                     {
                         invec.push_back(cur_vel[i]);
+                        invec.push_back(cur_vel[i+3]);
+                        invec.push_back(cur_vel[i+6]);
+                        invec.push_back(cur_vel[i+9]);
                     }
 
                     // 上一次动作 out_last（按 action_space）
@@ -1122,51 +1138,99 @@ void Zbot_RL::ALL_Motor_PD_Control(int delay_us, std::vector<float> motor_angles
 {
     auto t = std::chrono::high_resolution_clock::now();//这一句耗时50us
 
-    Motor.Motor_PD_Control(USB2CAN0_, 2, 0x01, &Zbot_RL_4L_PD, -motor_angles[0]); // 电机顺时针为角度增加，所以加负号
+    // Motor.Motor_PD_Control(USB2CAN0_, 2, 0x01, &Zbot_RL_4L_PD, -motor_angles[0]); // 电机顺时针为角度增加，所以加负号
+    // t += std::chrono::microseconds(delay_us);
+    // std::this_thread::sleep_until(t);
+
+    // Motor.Motor_PD_Control(USB2CAN1_, 2, 0x07, &Zbot_RL_4L_PD, -motor_angles[6]); // 电机顺时针为角度增加，所以加负号
+    // t += std::chrono::microseconds(delay_us);
+    // std::this_thread::sleep_until(t);
+
+    // Motor.Motor_PD_Control(USB2CAN0_, 1, 0x04, &Zbot_RL_4L_PD, -motor_angles[3]); // 电机顺时针为角度增加，所以加负号
+    // t += std::chrono::microseconds(delay_us);
+    // std::this_thread::sleep_until(t);
+
+    // Motor.Motor_PD_Control(USB2CAN1_, 1, 0x10, &Zbot_RL_4L_PD, -motor_angles[9]); // 电机顺时针为角度增加，所以加负号
+    // t += std::chrono::microseconds(delay_us);
+    // std::this_thread::sleep_until(t);
+
+    // Motor.Motor_PD_Control(USB2CAN0_, 2, 0x02, &Zbot_RL_4L_PD, -motor_angles[1]); // 电机顺时针为角度增加，所以加负号
+    // t += std::chrono::microseconds(delay_us);
+    // std::this_thread::sleep_until(t);
+
+    // Motor.Motor_PD_Control(USB2CAN1_, 2, 0x08, &Zbot_RL_4L_PD, -motor_angles[7]); // 电机顺时针为角度增加，所以加负号
+    // t += std::chrono::microseconds(delay_us);
+    // std::this_thread::sleep_until(t);
+
+    // Motor.Motor_PD_Control(USB2CAN0_, 1, 0x05, &Zbot_RL_4L_PD, -motor_angles[4]); // 电机顺时针为角度增加，所以加负号
+    // t += std::chrono::microseconds(delay_us);
+    // std::this_thread::sleep_until(t);
+
+    // Motor.Motor_PD_Control(USB2CAN1_, 1, 0x11, &Zbot_RL_4L_PD, -motor_angles[10]); // 电机顺时针为角度增加，所以加负号
+    // t += std::chrono::microseconds(delay_us);
+    // std::this_thread::sleep_until(t);
+
+    // Motor.Motor_PD_Control(USB2CAN0_, 2, 0x03, &Zbot_RL_4L_PD, -motor_angles[2]); // 电机顺时针为角度增加，所以加负号
+    // t += std::chrono::microseconds(delay_us);
+    // std::this_thread::sleep_until(t);
+
+    // Motor.Motor_PD_Control(USB2CAN1_, 2, 0x09, &Zbot_RL_4L_PD, -motor_angles[8]); // 电机顺时针为角度增加，所以加负号
+    // t += std::chrono::microseconds(delay_us);
+    // std::this_thread::sleep_until(t);
+
+    // Motor.Motor_PD_Control(USB2CAN0_, 1, 0x06, &Zbot_RL_4L_PD, -motor_angles[5]); // 电机顺时针为角度增加，所以加负号
+    // t += std::chrono::microseconds(delay_us);
+    // std::this_thread::sleep_until(t);
+
+    // Motor.Motor_PD_Control(USB2CAN1_, 1, 0x12, &Zbot_RL_4L_PD, -motor_angles[11]); // 电机顺时针为角度增加，所以加负号
+    // t += std::chrono::microseconds(delay_us);
+    // std::this_thread::sleep_until(t);
+
+    Motor.Motor_PD_Control(USB2CAN0_, 1, 0x0a, &Zbot_RL_4L_PD, -motor_angles[0]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN1_, 2, 0x07, &Zbot_RL_4L_PD, -motor_angles[6]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN1_, 1, 0x14, &Zbot_RL_4L_PD, -motor_angles[2]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN0_, 1, 0x04, &Zbot_RL_4L_PD, -motor_angles[3]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN0_, 2, 0x0d, &Zbot_RL_4L_PD, -motor_angles[1]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN1_, 1, 0x10, &Zbot_RL_4L_PD, -motor_angles[9]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN1_, 2, 0x17, &Zbot_RL_4L_PD, -motor_angles[3]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN0_, 2, 0x02, &Zbot_RL_4L_PD, -motor_angles[1]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN0_, 1, 0x0b, &Zbot_RL_4L_PD, -motor_angles[4]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN1_, 2, 0x08, &Zbot_RL_4L_PD, -motor_angles[7]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN1_, 1, 0x15, &Zbot_RL_4L_PD, -motor_angles[6]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN0_, 1, 0x05, &Zbot_RL_4L_PD, -motor_angles[4]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN0_, 2, 0x0e, &Zbot_RL_4L_PD, -motor_angles[5]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN1_, 1, 0x11, &Zbot_RL_4L_PD, -motor_angles[10]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN1_, 2, 0x18, &Zbot_RL_4L_PD, -motor_angles[7]); // 电机顺时针为角度增加，所以加负号
+    t += std::chrono::microseconds(delay_us);
+    std::this_thread::sleep_until(t);
+    
+    Motor.Motor_PD_Control(USB2CAN0_, 1, 0x0c, &Zbot_RL_4L_PD, -motor_angles[8]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN0_, 2, 0x03, &Zbot_RL_4L_PD, -motor_angles[2]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN1_, 1, 0x16, &Zbot_RL_4L_PD, -motor_angles[10]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN1_, 2, 0x09, &Zbot_RL_4L_PD, -motor_angles[8]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN0_, 2, 0x0f, &Zbot_RL_4L_PD, -motor_angles[9]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 
-    Motor.Motor_PD_Control(USB2CAN0_, 1, 0x06, &Zbot_RL_4L_PD, -motor_angles[5]); // 电机顺时针为角度增加，所以加负号
-    t += std::chrono::microseconds(delay_us);
-    std::this_thread::sleep_until(t);
-
-    Motor.Motor_PD_Control(USB2CAN1_, 1, 0x12, &Zbot_RL_4L_PD, -motor_angles[11]); // 电机顺时针为角度增加，所以加负号
+    Motor.Motor_PD_Control(USB2CAN1_, 2, 0x19, &Zbot_RL_4L_PD, -motor_angles[11]); // 电机顺时针为角度增加，所以加负号
     t += std::chrono::microseconds(delay_us);
     std::this_thread::sleep_until(t);
 }

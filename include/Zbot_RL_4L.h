@@ -134,7 +134,7 @@ private:
 	// LibTorch 模型（TorchScript）
 	std::shared_ptr<torch::jit::script::Module> policy_model;
 	bool model_loaded = false;
-	std::string model_path = "/home/rain/libtorch/export_model/policy_standupsymmetry0.5.pt";
+	std::string model_path = "../policy/quad_keyboard.pt";
 
 	float joint_speed_limit = 1.0f; // 电机速度限制，固定为1(pi rad/s)，不再通过键盘输入修改。
 
@@ -142,10 +142,14 @@ private:
 	at::Tensor relative_tensor = torch::tensor({0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f});
 #endif
 	
-	// std::vector<float> zero_angles = std::vector<float>(motor_dof, 0.0f);
-	std::vector<float> zero_angles = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}; // 初始角度--摆直
+	std::vector<float> zero_angles = std::vector<float>(motor_dof, 0.0f);
+	// std::vector<float> zero_angles = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}; // 初始角度--摆直
 	// std::vector<float> init_angles = {0.312f, 0.837f, -2.02f, 2.02f, -0.837f, -0.312f}; // 初始角度--站立
-	std::vector<float> init_angles = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+	// std::vector<float> init_angles = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+	std::vector<float> init_angles = {0.785398f, -1.570796f, 0.0f, 
+									 -0.785398f,  1.570796f, 0.0f,
+									  0.785398f, -1.570796f, 0.0f,
+									 -0.785398f,  1.570796f, 0.0f,}; // 初始角度--站立
 	// float range = 0.3f * PI;
 	// std::vector<float> lower_limit = {0.312f - range, 0.837f - range, -2.02f - range, 2.02f - range, -0.837f - range, -0.312f - range}; // 电机运行范围
 	// std::vector<float> upper_limit = {0.312f + range, 0.837f + range, -2.02f + range, 2.02f + range, -0.837f + range, -0.312f + range}; // 电机运行范围
@@ -155,7 +159,8 @@ private:
 
 	std::vector<float> Q_meas_init = {1.0f, 0.0f, 0.0f, 0.0f}; // IMU初始测量四元数
 	// Eigen::Quaternionf Q_desired{0.6003f, -0.6003f, -0.3735f, -0.3739f}; // (w, x, y, z) // 注意Eigen中四元数赋值的顺序，实数w在首；但是实际上它的内部存储顺序是[x y z w]
-	Eigen::Quaternionf Q_desired{0.7070f, 0.0f, -0.7070f, 0.0f}; // (w, x, y, z) // 注意Eigen中四元数赋值的顺序，实数w在首；但是实际上它的内部存储顺序是[x y z w]
+	// Eigen::Quaternionf Q_desired{0.7070f, 0.0f, -0.7070f, 0.0f}; // (w, x, y, z) // 注意Eigen中四元数赋值的顺序，实数w在首；但是实际上它的内部存储顺序是[x y z w]
+	Eigen::Quaternionf Q_desired = {1.0f, 0.0f, 0.0f, 0.0f};
     Eigen::Quaternionf Q_offset{Eigen::Quaternionf::Identity()};
 
     Motor_PDControl_Struct Zbot_RL_4L_PD = {

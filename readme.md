@@ -21,12 +21,12 @@
 ```bash
 cd ./usb2can
 ```
-1. 运行 install.sh 或手动复制相关文件
+2. 运行 install.sh 或手动复制相关文件
 ```bash
 sudo chmod +x install.sh
 ./install.sh
 ```
-1. 运行下面的命令，使udev规则生效
+3. 运行下面的命令，使udev规则生效
 ```bash
 sudo udevadm trigger
 ```
