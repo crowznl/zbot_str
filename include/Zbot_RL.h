@@ -132,7 +132,11 @@ private:
 	// LibTorch 模型（TorchScript）
 	std::shared_ptr<torch::jit::script::Module> policy_model;
 	bool model_loaded = false;
-	std::string model_path = "/home/rain/libtorch/export_model/policy_standupsymmetry0.5.pt";
+	// std::string model_path = "/home/rain/libtorch/export_model/policy_standupsymmetry0.5.pt";
+	// std::string model_path_standupre = "/home/rain/libtorch/export_model/standup/resymmetry_policy.pt";  // 0119
+	std::string model_path_standup = "/home/rain/libtorch/export_model/standup/policy.pt";  // 0121
+	std::string model_path_biped = "/home/rain/libtorch/export_model/biped_keyboard.pt";
+	std::string model_path_snake = "/home/rain/libtorch/export_model/snake.pt";
 
 	float joint_speed_limit = 1.0f; // 电机速度限制，固定为1(pi rad/s)，不再通过键盘输入修改。
 
@@ -245,6 +249,9 @@ private:
 		float imu_quat[4] = {1.0f, 0.0f, 0.0f, 0.0f}; // (w,x,y,z)
 		float motor_pos[motor_dof] = {0};
 		float motor_vel[motor_dof] = {0};
+		float command1 = 0.0f;
+		float heading_err = 0.0f;
+		float target_heading_yaw = 0.0f;
 	};
 
 	std::queue<LogFrame> log_strategy_queue;

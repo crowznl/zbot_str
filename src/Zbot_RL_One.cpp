@@ -1,8 +1,59 @@
+// 增加 PolicyKind、PolicyInitAngles()、PolicyModelPath()
+// 键盘支持 1/2/3 切换 standup/biped/snake
+// 在 Strategy_thread() 中完成模型热切换、init_angles/out_last/relative_tensor 重置、并下发到新初始位
+
 #include "Zbot_RL.h"
 #include <termios.h>
+#include <cmath>
 
 static class Hipnuc_IMU IMU;
 static class RS_Motor Motor;
+
+namespace {
+enum class PolicyKind { Standup = 0, Biped = 1, Snake = 2 };
+
+std::mutex g_policy_mutex;
+PolicyKind g_active_policy = PolicyKind::Biped;
+PolicyKind g_pending_policy = PolicyKind::Biped;
+bool g_policy_switch_requested = false;
+
+const char* PolicyName(PolicyKind kind)
+{
+    switch (kind)
+    {
+        case PolicyKind::Standup: return "standup";
+        case PolicyKind::Biped:   return "biped";
+        case PolicyKind::Snake:   return "snake";
+        default:                  return "unknown";
+    }
+}
+
+std::vector<float> PolicyInitAngles(PolicyKind kind)
+{
+    switch (kind)
+    {
+        case PolicyKind::Standup:
+            return {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        case PolicyKind::Biped:
+            return {0.312f, 0.837f, -2.02f, 2.02f, -0.837f, -0.312f};
+        case PolicyKind::Snake:
+            return {-0.45f, 0.45f, -0.45f, 0.45f, -0.45f, 0.45f};
+        default:
+            return {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    }
+}
+
+std::string PolicyModelPath(PolicyKind kind)
+{
+    switch (kind)
+    {
+        case PolicyKind::Standup: return "/home/rain/libtorch/export_model/standup/policy.pt";
+        case PolicyKind::Biped:   return "/home/rain/libtorch/export_model/biped_keyboard.pt";
+        case PolicyKind::Snake:   return "/home/rain/libtorch/export_model/snake.pt";
+        default:                  return "/home/rain/libtorch/export_model/biped_keyboard.pt";
+    }
+}
+} // namespace
 
 // 主函数循环
 void Zbot_RL::Spin()
@@ -21,6 +72,16 @@ Zbot_RL::Zbot_RL()
 {
     running_ = true;
     // all_thread_done_ = false;
+
+    {
+        std::lock_guard<std::mutex> lock(g_policy_mutex);
+        g_active_policy = PolicyKind::Biped;
+        g_pending_policy = PolicyKind::Biped;
+        g_policy_switch_requested = false;
+    }
+    init_angles = PolicyInitAngles(PolicyKind::Biped);
+    position_output = init_angles;
+    motor_angles = init_angles;
 
     std::cout << std::endl
             << "RUN Zbot_RL.cpp" << std::endl
@@ -97,11 +158,12 @@ Zbot_RL::Zbot_RL()
     }
 
 #ifdef USE_LIBTORCH
+    const std::string startup_model_path = PolicyModelPath(PolicyKind::Biped);
     // 加载模型，路径可在运行时替换
     try {
-        policy_model = std::make_shared<torch::jit::script::Module>(torch::jit::load(model_path_biped));
+        policy_model = std::make_shared<torch::jit::script::Module>(torch::jit::load(startup_model_path));
         model_loaded = true;
-        std::cout << "Policy model loaded." << std::endl;
+        std::cout << "Policy model loaded: " << startup_model_path << std::endl;
     } catch (const std::exception &e) {
         model_loaded = false;
         std::cout << "Warning: failed to load policy model: " << e.what() << std::endl;
@@ -355,7 +417,7 @@ void Zbot_RL::keyborad_input()
     // 设置新的终端属性
     tcsetattr(STDIN_FILENO, TCSANOW, &newt);
 
-    std::cout << "Keyboard control enabled (W/S: Velocity, A/D: Yaw)." << std::endl;
+    std::cout << "Keyboard control enabled (W/S: Velocity, A/D: Yaw, 1/2/3: standup/biped/snake)." << std::endl;
     // std::cout << std::fixed << std::setprecision(2);
 
     while (running_)
@@ -388,6 +450,30 @@ void Zbot_RL::keyborad_input()
             else if (c == 'P' || c == 'p') {
                 print_info_flag = !print_info_flag;
                 std::cout << "\nPrint Info: " << (print_info_flag ? "ON" : "OFF") << std::endl;
+            }
+            else if (c == '1') {
+                {
+                    std::lock_guard<std::mutex> policy_lock(g_policy_mutex);
+                    g_pending_policy = PolicyKind::Standup;
+                    g_policy_switch_requested = true;
+                }
+                std::cout << "Switch request: standup" << std::endl;
+            }
+            else if (c == '2') {
+                {
+                    std::lock_guard<std::mutex> policy_lock(g_policy_mutex);
+                    g_pending_policy = PolicyKind::Biped;
+                    g_policy_switch_requested = true;
+                }
+                std::cout << "Switch request: biped" << std::endl;
+            }
+            else if (c == '3') {
+                {
+                    std::lock_guard<std::mutex> policy_lock(g_policy_mutex);
+                    g_pending_policy = PolicyKind::Snake;
+                    g_policy_switch_requested = true;
+                }
+                std::cout << "Switch request: snake" << std::endl;
             }
 
             if (updated) {
@@ -427,6 +513,57 @@ void Zbot_RL::Strategy_thread()
     while (running_)
     {
         auto t0 = std::chrono::steady_clock::now();
+
+        bool need_switch = false;
+        PolicyKind switch_target = PolicyKind::Biped;
+        {
+            std::lock_guard<std::mutex> lock(g_policy_mutex);
+            if (g_policy_switch_requested && g_pending_policy != g_active_policy)
+            {
+                switch_target = g_pending_policy;
+                g_active_policy = g_pending_policy;
+                g_policy_switch_requested = false;
+                need_switch = true;
+            }
+            else if (g_policy_switch_requested)
+            {
+                g_policy_switch_requested = false;
+            }
+        }
+
+        if (need_switch)
+        {
+            init_angles = PolicyInitAngles(switch_target);
+            out_last.assign(action_space, -1.0f);
+#ifdef USE_LIBTORCH
+            relative_tensor = torch::zeros({action_space}, torch::kFloat32);
+            const std::string target_model_path = PolicyModelPath(switch_target);
+            try {
+                auto next_model = std::make_shared<torch::jit::script::Module>(torch::jit::load(target_model_path));
+                policy_model = next_model;
+                model_loaded = true;
+                std::cout << "Switched strategy to " << PolicyName(switch_target)
+                          << ", model=" << target_model_path << std::endl;
+            } catch (const std::exception &e) {
+                model_loaded = false;
+                std::cout << "Switch model failed (" << PolicyName(switch_target)
+                          << "): " << e.what() << std::endl;
+            }
+#endif
+            {
+                std::lock_guard<std::mutex> lock(mutex_position_output);
+                position_output = init_angles;
+            }
+
+            if constexpr (Motor_Ctrl_Mode == PD_MODE)
+            {
+                ALL_Motor_PD_Control(Delay_500us, init_angles);
+            }
+            else if constexpr (Motor_Ctrl_Mode == PP_MODE)
+            {
+                ALL_Motor_PP_Angle_Set(Delay_500us, init_angles);
+            }
+        }
 
         // 读取必要数据并计算输出
         {

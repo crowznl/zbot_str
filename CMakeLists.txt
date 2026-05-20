@@ -35,6 +35,7 @@ endif()
 # ========================
 option(USE_MOTOR_TEST "Use Motor_test instead of Zbot_RL" OFF)
 option(USE_ZBOT_RL_4L "Use Zbot_RL_4L (Quadruped) instead of Zbot_RL" OFF)
+option(USE_ZBOT_RL_ONE "Use Zbot_RL_One (multi-policy switch) instead of Zbot_RL" OFF)
 
 # ========================
 # 源文件
@@ -49,6 +50,8 @@ if (USE_MOTOR_TEST)
     list(APPEND SOURCES src/Motor_test.cpp)
 elseif (USE_ZBOT_RL_4L)
     list(APPEND SOURCES src/Zbot_RL_4L.cpp)
+elseif (USE_ZBOT_RL_ONE)
+    list(APPEND SOURCES src/Zbot_RL_One.cpp)
 else()
     list(APPEND SOURCES src/Zbot_RL.cpp)
 endif()
